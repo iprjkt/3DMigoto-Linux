@@ -152,11 +152,11 @@ unbuffered = 0
 Install CMake, MinGW-w64, and build tools:
 
 ```bash
-# Arch Linux / Manjaro
+# Arch Linux
 sudo pacman -S mingw-w64-gcc cmake make ninja
 
 # Ubuntu / Debian
-sudo pacman -S gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 cmake make ninja
+sudo apt install gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 cmake make ninja
 
 # Fedora
 sudo dnf install mingw64-gcc mingw64-gcc-c++ cmake make ninja-build
