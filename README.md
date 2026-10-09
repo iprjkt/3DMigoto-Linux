@@ -166,7 +166,7 @@ sudo dnf install mingw64-gcc mingw64-gcc-c++ cmake make ninja-build
 
 ```bash
 # Clone the repository
-git clone https://github.com/<your-username>/3DMigoto-Linux.git
+git clone https://github.com/iprjkt/3DMigoto-Linux.git
 cd 3DMigoto-Linux
 
 # Create build directory
