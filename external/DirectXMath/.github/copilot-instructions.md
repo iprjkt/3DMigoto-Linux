@@ -1,0 +1,521 @@
+# GitHub Copilot Instructions
+
+These instructions define how GitHub Copilot should assist with this project. The goal is to ensure consistent, high-quality code generation aligned with our conventions, stack, and best practices.
+
+## Context
+
+- **Project Type**: Math Library / DirectX / Direct3D
+- **Project Name**: DirectXMath SIMD C++ linear algebra library
+- **Language**: C++ (minimum C++11; C++14, C++17, and C++20 features used conditionally)
+- **Framework / Libraries**: STL / CMake / CTest
+- **Compiler Requirement**: Visual C++ 2019 (16.11), Visual Studio 2022, or Visual Studio 2026 or later when using MSVC.
+
+## Getting Started
+
+- See the Getting Started guide on [Microsoft Learn](https://learn.microsoft.com/windows/win32/dxmath/pg-xnamath-getting-started).
+- The recommended way to integrate *DirectXMath* into your project is by using the *vcpkg* Package Manager.
+- You can make use of the nuget.org package **directxmath**.
+- You can also use the library source code directly in your project or as a git submodule.
+- The Windows SDK includes the DirectXMath library, although that version is not as up-to-date as other integration methods.
+
+## General Guidelines
+
+- **Code Style**: The project uses an .editorconfig file to enforce coding standards. Follow the rules defined in `.editorconfig` for indentation, line endings, and other formatting. Additional information can be found on the wiki at [Implementation](https://github.com/microsoft/DirectXMath/wiki/Implementation). The code requires C++11/C++14 features.
+> Notable `.editorconfig` rules: C/C++ files use 4-space indentation, `crlf` line endings, and `latin1` charset — avoid non-ASCII characters in source files.
+- **Documentation**: The project provides documentation on [Microsoft Learn](https://learn.microsoft.com/windows/win32/dxmath/directxmath-portal) with additional wiki pages available on [GitHub](https://github.com/microsoft/DirectXMath/wiki/). The project does **not** use Doxygen.
+- **Error Handling**: The majority of functions have no error conditions and do not throw C++ exceptions which is why they are marked `noexcept`. A few functions have `bool` results to indicate success or failure.
+- **Testing**: Unit tests for this project are implemented in a separate repository [Test Suite](https://github.com/walbourn/directxmathtest/) and can be run using CTest per the instructions at [Test Documentation](https://github.com/walbourn/directxmathtest/wiki). See [test copilot instructions](https://github.com/walbourn/directxmathtest/blob/main/.github/copilot-instructions.md) for additional information on the tests.
+- **Security**: This project uses secure coding practices from the Microsoft Secure Coding Guidelines, and is subject to the `SECURITY.md` file in the root of the repository.
+- **Dependencies**: The project has minimal dependencies, primarily relying on compiler intrinsics. It is designed to be self-contained and portable across different platforms and toolsets.
+- **Continuous Integration**: This project has 20 GitHub Actions workflows covering MSVC, Clang/LLVM, GCC (WSL), ARM64, macOS, Address Sanitizer, CodeQL, and super-linter. Workflows are in `.github/workflows/` and include compiler-specific builds (`msvc.yml`, `clangcl.yml`, `cxx.yml`), platform-specific builds (`arm64.yml`, `arm64test.yml`, `macos.yml`, `wsl.yml`, `wslcxx.yml`), extension tests (`shmath.yml`, `shmathclang.yml`, `xdsp.yml`, `xdspclang.yml`), and static analysis (`codeql.yml`, `lint.yml`, `asan.yml`). Additional workflows include `main.yml`, `msbuild.yml`, `msbuildex.yml`, and `test.yml`. Azure DevOps pipeline configurations are in `.azuredevops/`.
+- **Code of Conduct**: The project adheres to the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/). All contributors are expected to follow this code of conduct in all interactions related to the project.
+
+## File Structure
+
+```plaintext
+.azuredevops/ # Azure DevOps pipeline configuration and policy files.
+.github/      # GitHub Actions workflow files and linter configuration files.
+.nuget/       # NuGet package configuration files.
+build/        # Miscellaneous build files and scripts (CMake config templates, pkg-config, PowerShell helpers).
+Inc/          # DirectXMath public and implementation files. The library is header-only, so all files are in this directory.
+Extensions/   # Extensions to the DirectXMath library with standalone SSE-level specific functions for runtime selection of SIMD instruction set.
+MatrixStack/  # D3DX9-like matrix stack implementation for DirectXMath.
+SHMath/       # Spherical harmonic functions using DirectXMath.
+Stereo3D/     # Stereo 3D projection matrix functions using DirectXMath created for HoloLens.
+XDSP/         # Digital Signal Processing (DSP) functions using DirectXMath.
+skills/       # Published CoPilot skills for use by developers.
+Tests/        # Tests are designed to be cloned from a separate repository at this location.
+wiki/         # Local clone of the GitHub wiki documentation repository.
+```
+
+> The `Extensions` are not needed if building the library using `/arch:AVX` or `/arch:AVX2` which causes the DirectXMath library to build utilizing the additional SIMD instructions.
+
+### Public Header Files (`Inc/`)
+
+| File | Purpose |
+| --- | --- |
+| `DirectXMath.h` | Core library: types, constants, vector and matrix math functions |
+| `DirectXMathConvert.inl` | Implementation of type conversion / load / store functions |
+| `DirectXMathMatrix.inl` | Implementation of matrix math functions |
+| `DirectXMathMisc.inl` | Implementation of miscellaneous functions (quaternion, color, plane, etc.) |
+| `DirectXMathVector.inl` | Implementation of vector math functions |
+| `DirectXCollision.h` / `.inl` | Bounding volumes: `BoundingSphere`, `BoundingBox`, `BoundingOrientedBox`, `BoundingFrustum` |
+| `DirectXColors.h` | Predefined color constants (`DirectX::Colors::*` sRGB, `DirectX::ColorsLinear::*` linear) |
+| `DirectXPackedVector.h` / `.inl` | GPU-friendly packed vector types (`DirectX::PackedVector::*`), e.g. `XMCOLOR`, `XMHALF4`, `XMBYTE4` |
+
+### Extension Header Files (`Extensions/`)
+
+Each extension header provides optimized overrides for a specific instruction set tier. They must be included **after** `DirectXMath.h` and live in their own sub-namespace:
+
+| File | Namespace | Instruction set |
+| --- | --- | --- |
+| `DirectXMathSSE3.h` | `DirectX::SSE3` | SSE3 |
+| `DirectXMathSSE4.h` | `DirectX::SSE4` | SSE4.1 |
+| `DirectXMathAVX.h` | `DirectX::AVX` | AVX |
+| `DirectXMathAVX2.h` | `DirectX::AVX2` | AVX2 |
+| `DirectXMathFMA3.h` | `DirectX::FMA3` | FMA3 |
+| `DirectXMathFMA4.h` | `DirectX::FMA4` | FMA4 (AMD) |
+| `DirectXMathF16C.h` | `DirectX::F16C` | F16C (half-precision) |
+| `DirectXMathBE.h` | `DirectX::BEMath` | Big-endian scalar fallback |
+
+## Namespace Structure
+
+All types and functions are in the `DirectX` namespace. Sub-namespaces are used for optional components:
+
+| Namespace | Contents |
+| --- | --- |
+| `DirectX` | All core math types and functions |
+| `DirectX::PackedVector` | GPU-friendly packed types from `DirectXPackedVector.h` |
+| `DirectX::Colors` | sRGB named color constants from `DirectXColors.h` |
+| `DirectX::ColorsLinear` | Linear-space color constants from `DirectXColors.h` |
+| `DirectX::MathInternal` | Private implementation details (do not use directly); renamed from `DirectX::Internal` in v3.20 |
+| `DirectX::SSE3`, `::SSE4`, `::AVX`, `::AVX2`, `::FMA3`, `::FMA4`, `::F16C`, `::BEMath` | Extension-specific optimized overrides |
+
+## SIMD Intrinsic Macro Hierarchy
+
+DirectXMath auto-selects the SIMD backend based on compiler/architecture. Macros cascade from highest to lowest:
+
+```cpp
+_XM_AVX2_INTRINSICS_     -> enables _XM_FMA3_INTRINSICS_ + _XM_F16C_INTRINSICS_
+_XM_AVX_INTRINSICS_      -> enables _XM_SSE4_INTRINSICS_
+_XM_SSE4_INTRINSICS_     -> enables _XM_SSE3_INTRINSICS_
+_XM_SSE3_INTRINSICS_     -> enables _XM_SSE_INTRINSICS_
+_XM_SSE_INTRINSICS_      (auto-enabled for x86/x64/PowerPC64)
+_XM_ARM_NEON_INTRINSICS_ (auto-enabled for ARM/ARM64/ARM64EC)
+_XM_NO_INTRINSICS_       (pure C++ fallback; force with this define)
+```
+
+Optional macros:
+- `_XM_SVML_INTRINSICS_` — Intel Short Vector Math Library (auto-enabled for SSE paths with MSVC 2019+ / `_MSC_VER >= 1920`, excluding Clang and IntelLLVM; opt-out with `_XM_DISABLE_INTEL_SVML_`)
+- `_XM_NO_MOVNT_` — Disables non-temporal store instructions (`_mm_stream_ps`, etc.)
+- `_XM_FAVOR_INTEL_` — Uses `_mm_permute_ps` (AVX) over `_mm_shuffle_ps` when available
+- `_XM_NO_XMVECTOR_OVERLOADS_` — Disables `XMVECTOR` arithmetic operators (auto-set for GCC/Clang)
+
+When writing multi-path implementations, follow this pattern:
+
+```cpp
+#if defined(_XM_NO_INTRINSICS_)
+    // Pure C++ path
+#elif defined(_XM_ARM_NEON_INTRINSICS_)
+    // ARM NEON path
+#elif defined(_XM_AVX2_INTRINSICS_)
+    // AVX2 path
+#elif defined(_XM_SSE4_INTRINSICS_)
+    // SSE4.1 path
+#elif defined(_XM_SSE_INTRINSICS_)
+    // SSE/SSE2 path (baseline for x86/x64)
+#endif
+```
+
+## Core Type System
+
+### Computation Type
+
+`XMVECTOR` is the fundamental 128-bit SIMD register type. It maps to `__m128` (SSE), `float32x4_t` (ARM NEON), or a plain struct (no-intrinsics). It must be **16-byte aligned**.
+
+### Storage Types
+
+Storage types hold data in memory. Use `XMLoad*` / `XMStore*` to move between storage and `XMVECTOR`.
+
+| Type | Description |
+| --- | --- |
+| `XMFLOAT2` / `XMFLOAT2A` | 2D float vector (A = 16-byte aligned) |
+| `XMFLOAT3` / `XMFLOAT3A` | 3D float vector |
+| `XMFLOAT4` / `XMFLOAT4A` | 4D float vector |
+| `XMINT2` / `XMINT3` / `XMINT4` | 2/3/4D signed int32 vector |
+| `XMUINT2` / `XMUINT3` / `XMUINT4` | 2/3/4D unsigned int32 vector |
+| `XMFLOAT3X3`, `XMFLOAT4X3`, `XMFLOAT4X4`, `XMFLOAT4X4A` | Matrix storage types |
+
+### Constant Helper Types
+
+Used for declaring compile-time SIMD constants (not for computation):
+
+```cpp
+XMVECTORF32  // float constants:    { { { 1.f, 0.f, 0.f, 1.f } } }
+XMVECTORI32  // int32 constants:    { { { 1, 0, 0, 1 } } }
+XMVECTORU32  // uint32 constants:   { { { 0xFFFFFFFF, 0, 0, 0 } } }
+XMVECTORU8   // uint8 byte pattern: { { { 0x00, 0xFF, ... } } }
+```
+
+### Calling Convention Typedefs
+
+XMVECTOR and XMMATRIX have special parameter-passing typedefs to maximize register usage. **Always use these instead of raw `XMVECTOR`/`XMMATRIX` for function parameters.**
+
+| Typedef | Purpose |
+| --- | --- |
+| `FXMVECTOR` | 1st–3rd `XMVECTOR` parameters (in-register on x86/ARM/ARM64/vectorcall) |
+| `GXMVECTOR` | 4th `XMVECTOR` parameter (in-register on ARM/ARM64/vectorcall) |
+| `HXMVECTOR` | 5th–6th `XMVECTOR` parameters (in-register on ARM64/vectorcall) |
+| `CXMVECTOR` | 7th+ `XMVECTOR` parameters (always by `const` reference) |
+| `FXMMATRIX` | 1st `XMMATRIX` parameter (in-register on ARM64/vectorcall) |
+| `CXMMATRIX` | 2nd+ `XMMATRIX` parameters (always by `const` reference) |
+
+All functions that take or return `XMVECTOR`/`XMMATRIX` must use `XM_CALLCONV`:
+
+```cpp
+XMVECTOR XM_CALLCONV XMVectorHermite(
+    FXMVECTOR Position0, FXMVECTOR Tangent0, FXMVECTOR Position1,
+    GXMVECTOR Tangent1, float t) noexcept;
+
+XMVECTOR XM_CALLCONV XMVector3Project(
+    FXMVECTOR V,
+    float ViewportX, float ViewportY, float ViewportWidth, float ViewportHeight,
+    float ViewportMinZ, float ViewportMaxZ,
+    FXMMATRIX Projection, CXMMATRIX View, CXMMATRIX World) noexcept;
+```
+
+### Load/Store Pattern
+
+Always load storage types to `XMVECTOR` before computation, and store back afterward:
+
+```cpp
+XMFLOAT3 input{ 1.f, 2.f, 3.f };
+XMVECTOR v = XMLoadFloat3(&input);        // storage → register
+v = XMVector3Normalize(v);
+XMFLOAT3 output;
+XMStoreFloat3(&output, v);               // register → storage
+```
+
+Use the `A`-suffixed variants (`XMLoadFloat4A`, `XMStoreFloat4A`) only with 16-byte-aligned storage types (`XMFLOAT4A`, etc.).
+
+## Naming Conventions
+
+Source: `wiki/Implementation.md`
+
+- **PascalCase**: class names, methods, free functions, enums
+- **camelCase**: struct member variables
+- **UPPERCASE**: preprocessor defines and nameless enums
+- **`XM` prefix**: types (`XMVECTOR`, `XMFLOAT3`), utility macros (`XM_PI`, `XM_CALLCONV`)
+- **`XMVector*/XMMatrix*/XMColor*/XMQuaternion*`**: function families
+- **`XMLoad*/XMStore*`**: load/store conversion functions
+- No [Hungarian notation](https://wikipedia.org/wiki/Hungarian_notation) except `p` for pointers and `sz` for strings
+
+## SAL Annotations
+
+The library uses SAL2 annotations on all function parameters. Include them on any new code:
+
+```cpp
+_In_                       // non-null input pointer
+_Out_                      // non-null output pointer (written before read)
+_Inout_                    // non-null input and output pointer
+_In_reads_(Count)          // input array of Count elements
+_Out_writes_(Count)        // output array of Count elements
+_In_reads_bytes_(n)        // input pointer reading n bytes
+```
+
+Example:
+
+```cpp
+XMMATRIX XM_CALLCONV XMLoadFloat4x4(_In_ const XMFLOAT4X4* pSource) noexcept;
+void XM_CALLCONV XMStoreFloat4x4(_Out_ XMFLOAT4X4* pDestination, _In_ FXMMATRIX M) noexcept;
+```
+
+SAL annotations compile to no-ops unless `/analyze` is used; they never affect code generation. On non-Windows platforms, a `sal.h` compatibility header must be provided (e.g., from the DirectX-Headers package).
+
+## Key Macros
+
+| Macro | Description |
+| --- | --- |
+| `XM_CALLCONV` | `__vectorcall` (MSVC/clang-cl x86/x64), `__fastcall` (fallback), empty (GCC) |
+| `XM_ALIGNED_STRUCT(n)` | Portable `alignas(n) struct` / `__declspec(align(n)) struct` |
+| `XM_ALIGNED_DATA(n)` | Portable `alignas(n)` / `__attribute__((aligned(n)))` |
+| `XM_DEPRECATED` | `[[deprecated]]` (C++14+), `__attribute__((deprecated))` (GCC), `__declspec(deprecated)` (MSVC) |
+| `XM_CACHE_LINE_SIZE` | `64` (x86/x64), `128` (ARM/ARM64) |
+| `XMGLOBALCONST` | Used for global color constants in `DirectXColors.h` |
+| `XM_STREAM_PS` / `XM_SFENCE` | Non-temporal stores (controlled by `_XM_NO_MOVNT_`) |
+| `XM_FMADD_PS` / `XM_FNMADD_PS` | FMA ops when `_XM_FMA3_INTRINSICS_` is active, else expanded to mul+add |
+| `XM_PERMUTE_PS` | `_mm_permute_ps` (AVX) or `_mm_shuffle_ps` (SSE) |
+| `XM_LOADU_SI16` | SSE: loads 16-bit integer; workaround for GCC < 11 and PowerPC64 |
+| `XM_PREFETCH` | ARM NEON only: `__builtin_prefetch` (Clang/GCC) or `__prefetch` (MSVC) |
+
+## CMake Build Options
+
+| CMake Option | Default | Description |
+| --- | --- | --- |
+| `BUILD_XDSP` | `OFF` | Build XDSP Digital Signal Processing extension |
+| `BUILD_SHMATH` | `OFF` | Build Spherical Harmonics math extension |
+| `BUILD_TESTING` | (CTest) | Enable CTest unit tests (requires `Tests/` submodule) |
+| `BUILD_AVX_TEST` | `OFF` | Test preset: enable AVX instruction set |
+| `BUILD_AVX2_TEST` | `OFF` | Test preset: enable AVX2 instruction set |
+| `BUILD_F16C_TEST` | `OFF` | Test preset: enable F16C instruction set |
+| `BUILD_NO_INTRINSICS` | `OFF` | Test preset: force `_XM_NO_INTRINSICS_` mode |
+| `BUILD_FOR_ONECORE` | `OFF` | Build for OneCore using APISets |
+
+The CMake library exports as `Microsoft::DirectXMath` and requires **CMake 3.21+**.
+
+Standardized build configurations are provided in `CMakePresets.json` with 20+ presets covering MSVC, Clang, MinGW, and Intel compilers across x86, x64, ARM64, and ARM64EC architectures. Use `cmake --preset <name>` to configure (e.g., `cmake --preset x64-Debug`).
+
+## C++ Standard Feature Usage
+
+The library uses conditional C++ standard feature guards:
+
+```cpp
+#if (__cplusplus >= 201402L)
+    // C++14 features (e.g., [[deprecated]])
+#endif
+
+#if (__cplusplus >= 201703L)
+    // C++17 features (e.g., alignas for XM_ALIGNED_STRUCT)
+#endif
+
+#if (__cplusplus >= 202002L)
+    // C++20 features (e.g., spaceship <=> operator on storage types)
+    #include <compare>
+    bool operator == (const XMFLOAT2&) const = default;
+    auto operator <=> (const XMFLOAT2&) const = default;
+    // Applied to: XMFLOAT2/3/4, XMINT2/3/4, XMUINT2/3/4, and other storage types
+#endif
+```
+
+The base requirement is **C++11**. Do not unconditionally use C++14/17/20 features without guards.
+
+## File Header Convention
+
+Every source file (`.h`, `.inl`, etc.) must begin with this block:
+
+```cpp
+//-------------------------------------------------------------------------------------
+// {FileName} -- {One-line description}
+//
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+//
+// https://go.microsoft.com/fwlink/?LinkID=615560
+//-------------------------------------------------------------------------------------
+```
+
+Section separators within files use:
+- Major sections: `//-------------------------------------------------------------------------------------`
+- Subsections:   `//---------------------------------------------------------------------------------`
+- C-style block headers for top-level groupings:
+
+```cpp
+/****************************************************************************
+*
+* {Section Name}
+*
+****************************************************************************/
+```
+
+The project does **not** use Doxygen. API documentation is maintained exclusively on the GitHub wiki.
+
+## Assertion Patterns
+
+The library uses `assert()` extensively for precondition validation in debug builds. Follow these patterns in new code:
+
+```cpp
+// Pointer validation (all load/store functions)
+assert(pSource);
+
+// Alignment validation (aligned load/store variants)
+assert((reinterpret_cast<uintptr_t>(pSource) & 0xF) == 0);
+
+// Semantic constraints (unit quaternion, unit direction, non-zero vector)
+assert(DirectX::MathInternal::XMQuaternionIsUnit(Orientation));
+assert(DirectX::MathInternal::XMVector3IsUnit(Direction));
+assert(!XMVector3Equal(N, XMVectorZero()));
+
+// Range/bounds validation
+assert(DivExponent < 32);
+assert(NearZ > 0.f && FarZ > 0.f);
+```
+
+## Pragma Conventions
+
+The codebase uses compiler-specific pragmas that should be followed in new code:
+
+**MSVC warning suppression** (push/pop around affected blocks):
+
+```cpp
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4701)
+// code that triggers the warning
+#pragma warning(pop)
+#endif
+```
+
+**Clang diagnostic suppression**:
+
+```cpp
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wgnu-anonymous-struct"
+#pragma clang diagnostic ignored "-Wnested-anon-types"
+// code
+#pragma clang diagnostic pop
+#endif
+```
+
+**Floating-point precision** (MSVC-only, for mathematically sensitive code):
+
+```cpp
+#ifdef _MSC_VER
+#pragma float_control(push)
+#pragma float_control(precise, on)
+// sensitive floating-point calculations
+#pragma float_control(pop)
+#endif
+```
+
+**PREfast static analysis suppression**:
+
+```cpp
+#ifdef _PREFAST_
+#pragma prefast(push)
+#pragma prefast(disable : 25000, "FXMVECTOR is 16 bytes")
+// code
+#pragma prefast(pop)
+#endif
+```
+
+## Template Specialization Patterns
+
+Performance-critical functions like `XMVectorPermute` and `XMVectorSwizzle` use template specialization to map compile-time constants to optimal SIMD instructions:
+
+```cpp
+// General template (fallback)
+template<uint32_t PermuteX, uint32_t PermuteY, uint32_t PermuteZ, uint32_t PermuteW>
+inline XMVECTOR XM_CALLCONV XMVectorPermute(FXMVECTOR V1, FXMVECTOR V2) noexcept;
+
+// Specializations for common patterns that map to single instructions
+template<> constexpr XMVECTOR XM_CALLCONV XMVectorPermute<0,1,2,3>(...) { return V1; }
+template<> inline XMVECTOR XM_CALLCONV XMVectorPermute<0,1,4,5>(...) { return _mm_movelh_ps(V1, V2); }
+```
+
+There are 50+ such specializations. Use `static_assert` to validate template parameters at compile time (e.g., `PermuteX <= 7`).
+
+## Constexpr Usage
+
+Mark utility functions and constructors `constexpr` where possible:
+
+```cpp
+// Utility functions
+constexpr float XMConvertToRadians(float fDegrees) noexcept { ... }
+constexpr float XMConvertToDegrees(float fRadians) noexcept { ... }
+
+// Comparison result helpers
+constexpr bool XMComparisonAllTrue(uint32_t CR) noexcept { ... }
+
+// Storage type and bounding volume constructors
+constexpr XMFLOAT3(float _x, float _y, float _z) noexcept : x(_x), y(_y), z(_z) {}
+```
+
+## Deprecated Types
+
+The following packed vector types in `DirectXPackedVector.h` are deprecated and should not be used in new code. They are marked with `XM_DEPRECATED`:
+
+- `XMXDEC4`
+- `XMDECN4`
+- `XMDEC4`
+
+These were legacy types originally from xboxmath on the Xbox 360 which no longer have any GPU format equivalents.
+
+## XNAMath Compatibility
+
+`DirectXMath.h` contains a block of `#undef` statements (guarded by `__XNAMATH_H__`) that prevent macro conflicts with the legacy XNA Math library. Do not remove these.
+
+## References
+
+- [Source git repository on GitHub](https://github.com/microsoft/DirectXMath.git)
+- [DirectXMath wiki git repository on GitHub](https://github.com/microsoft/DirectXMath.wiki.git)
+- [DirectXMath test suite git repository on GitHub](https://github.com/walbourn/directxmathtest.git)
+- [C++ Core Guidelines](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines)
+- [Microsoft Secure Coding Guidelines](https://learn.microsoft.com/en-us/security/develop/secure-coding-guidelines)
+- [CMake Documentation](https://cmake.org/documentation/)
+- [VCPKG Documentation](https://learn.microsoft.com/vcpkg/)
+- [DirectXMath Documentation](https://learn.microsoft.com/windows/win32/dxmath/directxmath-portal)
+- [Games for Windows and the DirectX SDK blog - March 2012](https://walbourn.github.io/introducing-directxmath/)
+
+## No speculation
+
+When creating documentation:
+
+### Document Only What Exists
+
+- Only document features, patterns, and decisions that are explicitly present in the source code.
+- Only include configurations and requirements that are clearly specified.
+- Do not make assumptions about implementation details.
+
+### Handle Missing Information
+
+- Ask the user questions to gather missing information.
+- Document gaps in current implementation or specifications.
+- List open questions that need to be addressed.
+
+### Source Material
+
+- Always cite the specific source file and line numbers for documented features.
+- Link directly to relevant source code when possible.
+- Indicate when information comes from requirements vs. implementation.
+
+### Verification Process
+
+- Review each documented item against source code whenever related to the task.
+- Remove any speculative content.
+- Ensure all documentation is verifiable against the current state of the codebase.
+
+## Cross-platform Support Notes
+
+- The code supports building for Windows and Linux.
+- Portability and conformance of the code is validated by building with Visual C++, clang/LLVM for Windows, MinGW, and GCC for Linux.
+
+### Platform and Compiler `#ifdef` Guards
+
+Use these established guards — do not invent new ones:
+
+| Guard | Purpose |
+| --- | --- |
+| `_WIN32` | Windows platform (desktop, UWP, Xbox) |
+| `_MSC_VER` | MSVC-specific (and MSVC-like clang-cl) pragmas and warning suppression |
+| `__clang__` | Clang/LLVM diagnostic suppressions |
+| `__MINGW32__` | MinGW compatibility headers |
+| `_M_ARM64` / `_M_X64` / `_M_IX86` | Architecture-specific code paths for MSVC (`#ifdef`) |
+| `_M_ARM64EC` | ARM64EC ABI (ARM64 code with x64 interop using ARM-NEON) for MSVC |
+| `__aarch64__` / `__x86_64__` / `__i386__` / `__powerpc64__` | Additional architecture-specific symbols for MinGW/GNUC (`#if`) |
+| `_M_ARM` / `__arm__` | This is the legacy 32-bit Windows on ARM which is deprecated. |
+| `__linux__` | This is used in some tests to check for Linux platform. |
+| `__APPLE__` | This is used in some tests to check for Apple platform. |
+
+> GNU predefined architecture macros (`__aarch64__`, `__x86_64__`, `__i386__`, `__powerpc64__`, `__arm__`) are always defined to `1` by the compiler — they are **not** merely defined/undefined like MSVC's `_M_ARM64`. Use them **bare** (without `defined()`) in `#if` expressions: `#if __aarch64__`, not `#if defined(__aarch64__)`. Using `defined()` is technically valid but inconsistent with the project's convention and suppresses `-Wundef` unnecessarily.
+
+## Code Review Instructions
+
+When reviewing code, focus on the following aspects:
+
+- Adherence to coding standards defined in `.editorconfig` and on the [wiki](https://github.com/microsoft/DirectXMath/wiki/Implementation).
+- Make coding recommendations based on the *C++ Core Guidelines*.
+- Proper use of RAII and smart pointers.
+- Correct error handling practices and C++ Exception safety.
+- Clarity and maintainability of the code.
+- Adequate comments where necessary.
+- Public interfaces located in `Inc\*.h` should be clearly defined and documented on the Microsoft Docs pages.
+- Optional functions are available in headers in the `SHMath`, `Stereo3D`, `MatrixStack`, and `XDSP` folders.
+- Compliance with the project's architecture and design patterns.
+- Ensure that all public functions and classes are covered by unit tests located on [GitHub](https://github.com/walbourn/directxmathtest.git) where applicable. Report any gaps in test coverage.
+- Check for performance implications, especially in geometry processing algorithms.
+- Provide brutally honest feedback on code quality, design, and potential improvements as needed.
+
+## Release Process
+
+The release process is documented in the [release skill](.github/skills/release/SKILL.md). Invoke the `release` skill for step-by-step guidance when performing a release.

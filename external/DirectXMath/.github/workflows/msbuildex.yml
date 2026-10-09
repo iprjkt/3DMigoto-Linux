@@ -1,0 +1,158 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+#
+# http://go.microsoft.com/fwlink/?LinkID=615560
+
+name: 'MSBuild (Extended)'
+
+on:
+  push:
+    branches: "main"
+    paths-ignore:
+      - '*.md'
+      - LICENSE
+      - '.azuredevops/**'
+      - '.github/*.md'
+      - '.nuget/*'
+      - build/*
+  pull_request:
+    branches: "main"
+    paths-ignore:
+      - '*.md'
+      - LICENSE
+      - '.azuredevops/**'
+      - '.github/*.md'
+      - '.nuget/*'
+      - build/*
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        include:
+          - platform: x86
+            build_type: 'AVX Debug'
+          - platform: x64
+            build_type: 'AVX Debug'
+          - platform: x86
+            build_type: 'AVX2 Debug'
+          - platform: x64
+            build_type: 'AVX2 Debug'
+          - platform: x86
+            build_type: 'x87 Debug'
+          - platform: x86
+            build_type: 'AVX Release'
+          - platform: x64
+            build_type: 'AVX Release'
+          - platform: x86
+            build_type: 'AVX2 Release'
+          - platform: x64
+            build_type: 'AVX2 Release'
+          - platform: x86
+            build_type: 'x87 Release'
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Clone test repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: walbourn/directxmathtest
+          path: Tests
+          ref: main
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
+        with:
+          msbuild-architecture: x64
+
+      - name: Build math3
+        working-directory: ${{ github.workspace }}/Tests/math3
+        run: >
+          msbuild /m /p:Configuration="${{ matrix.build_type }}" /p:Platform=${{ matrix.platform }}
+          ./math3_2022.slnx
+
+      - if: (matrix.build_type == 'Debug') || (matrix.build_type == 'Release')
+        name: Build shmath
+        working-directory: ${{ github.workspace }}/Tests/shmath
+        run: >
+          msbuild /m /p:Configuration=${{ matrix.build_type }} /p:Platform=${{ matrix.platform }}
+          ./shmath_2022.slnx
+
+      - if: (matrix.build_type == 'Debug') || (matrix.build_type == 'Release')
+        name: Build xdsp
+        working-directory: ${{ github.workspace }}/Tests/xdsp
+        run: >
+          msbuild /m /p:Configuration=${{ matrix.build_type }} /p:Platform=${{ matrix.platform }}
+          ./XDSPTest_2022.slnx
+
+  build2019:
+    runs-on: windows-2022
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        include:
+          - platform: x86
+            build_type: 'AVX Debug'
+          - platform: x64
+            build_type: 'AVX Debug'
+          - platform: x86
+            build_type: 'AVX2 Debug'
+          - platform: x64
+            build_type: 'AVX2 Debug'
+          - platform: x86
+            build_type: 'x87 Debug'
+          - platform: x86
+            build_type: 'AVX Release'
+          - platform: x64
+            build_type: 'AVX Release'
+          - platform: x86
+            build_type: 'AVX2 Release'
+          - platform: x64
+            build_type: 'AVX2 Release'
+          - platform: x86
+            build_type: 'x87 Release'
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Clone test repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: walbourn/directxmathtest
+          path: Tests
+          ref: main
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
+        with:
+          msbuild-architecture: x64
+
+      - name: Build math3
+        working-directory: ${{ github.workspace }}/Tests/math3
+        run: >
+          msbuild /m /p:Configuration="${{ matrix.build_type }}" /p:Platform=${{ matrix.platform }}
+          ./math3_2019.sln
+
+      - if: (matrix.build_type == 'Debug') || (matrix.build_type == 'Release')
+        name: Build shmath
+        working-directory: ${{ github.workspace }}/Tests/shmath
+        run: >
+          msbuild /m /p:Configuration=${{ matrix.build_type }} /p:Platform=${{ matrix.platform }}
+          ./shmath_2019.sln
+
+      - if: (matrix.build_type == 'Debug') || (matrix.build_type == 'Release')
+        name: Build xdsp
+        working-directory: ${{ github.workspace }}/Tests/xdsp
+        run: >
+          msbuild /m /p:Configuration=${{ matrix.build_type }} /p:Platform=${{ matrix.platform }}
+          ./XDSPTest_2019.sln
