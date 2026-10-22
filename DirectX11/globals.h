@@ -306,6 +306,10 @@ struct TextureOverride {
 	CommandList command_list;
 	CommandList post_command_list;
 
+	UINT override_byte_width;
+	UINT override_vertex_count;
+	UINT override_byte_stride;
+
 	TextureOverride() :
 		stereoMode(-1),
 		format(-1),
@@ -318,7 +322,10 @@ struct TextureOverride {
 		filter_index(FLT_MAX),
 		has_draw_context_match(false),
 		has_match_priority(false),
-		priority(0)
+		priority(0),
+		override_byte_width(0),
+		override_vertex_count(0),
+		override_byte_stride(0)
 	{}
 };
 

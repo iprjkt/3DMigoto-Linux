@@ -518,32 +518,44 @@ static vector<DWORD> assemble_cbvox_operand(string &s, vector<DWORD> &v, token_o
 static vector<DWORD> assemble_literal_operand(string &s, vector<DWORD> &v, token_operand *tOp)
 {
 	tOp->file = 4;
-	s.erase(s.begin());
-	if (s.find(",") < s.size()) {
-		s.erase(s.begin());
-		string s1 = s.substr(0, s.find(","));
-		s = s.substr(s.find(",") + 1);
-		if (s[0] == ' ')
-			s.erase(s.begin());
-		string s2 = s.substr(0, s.find(","));
-		s = s.substr(s.find(",") + 1);
-		if (s[0] == ' ')
-			s.erase(s.begin());
-		string s3 = s.substr(0, s.find(","));
-		s = s.substr(s.find(",") + 1);
-		if (s[0] == ' ')
-			s.erase(s.begin());
-		string s4 = s.substr(0, s.find(")"));
+	size_t open_paren = s.find('(');
+	size_t close_paren = s.rfind(')');
+	if (open_paren != string::npos && close_paren != string::npos && close_paren > open_paren) {
+		string inner = s.substr(open_paren + 1, close_paren - open_paren - 1);
+		vector<string> parts;
+		size_t p = 0;
+		while (p < inner.size()) {
+			while (p < inner.size() && (inner[p] == ' ' || inner[p] == '\t')) p++;
+			if (p >= inner.size()) break;
+			size_t comma = inner.find(',', p);
+			if (comma == string::npos) {
+				string part = inner.substr(p);
+				while (!part.empty() && (part.back() == ' ' || part.back() == '\t')) part.pop_back();
+				if (!part.empty()) parts.push_back(part);
+				break;
+			} else {
+				string part = inner.substr(p, comma - p);
+				while (!part.empty() && (part.back() == ' ' || part.back() == '\t')) part.pop_back();
+				if (!part.empty()) parts.push_back(part);
+				p = comma + 1;
+			}
+		}
 
-		v.push_back(strToDWORD(s1));
-		v.push_back(strToDWORD(s2));
-		v.push_back(strToDWORD(s3));
-		v.push_back(strToDWORD(s4));
+		if (parts.size() <= 1) {
+			tOp->comps_enum = 1; // 1 component
+			v.push_back(parts.empty() ? 0 : strToDWORD(parts[0]));
+		} else {
+			tOp->comps_enum = 2; // 4 components
+			for (size_t i = 0; i < 4; i++) {
+				if (i < parts.size())
+					v.push_back(strToDWORD(parts[i]));
+				else
+					v.push_back(0);
+			}
+		}
 	} else {
-		tOp->comps_enum = 1; // 1
-		s.erase(s.begin());
-		s.pop_back();
-		v.push_back(strToDWORD(s));
+		tOp->comps_enum = 1;
+		v.push_back(0);
 	}
 	v.insert(v.begin(), tOp->op);
 	return v;
@@ -796,23 +808,33 @@ static vector<string> strToWords(string s)
 		while (s[start] == ' ') start++;
 		if (start >= s.size())
 			break;
-		if (s[start] == '(' || s[start + 1] == '(') {
-			end = s.find(')', start) + 1;
-			if (end < s.size() && s[end] == ',')
-				end++;
+		if (s[start] == '(' || (start + 1 < s.size() && s[start + 1] == '(')) {
+			size_t close_paren = s.find(')', start);
+			if (close_paren != string::npos) {
+				end = close_paren + 1;
+				if (end < s.size() && s[end] == ',')
+					end++;
+			} else {
+				end = s.find(' ', start);
+			}
 		} else if (s[start] == '"') {
 			// Strings only exist in the printf / errorf debug
 			// instructions, and we need to match until the
 			// right-most quote in case there are extra quotes
 			// inside the string (which are not escaped).
-			end = s.rfind('"') + 1;
-			if (end < s.size() && s[end] == ',')
-				end++;
+			size_t close_quote = s.rfind('"');
+			if (close_quote != string::npos && close_quote > start) {
+				end = close_quote + 1;
+				if (end < s.size() && s[end] == ',')
+					end++;
+			} else {
+				end = s.find(' ', start);
+			}
 		} else {
 			end = s.find(' ', start);
-			if (s[end + 1] == '+') {
+			if (end != string::npos && end + 1 < s.size() && s[end + 1] == '+') {
 				end = s.find(' ', end + 3);
-				if (s.size() > end && s[end + 1] == '+') {
+				if (end != string::npos && end + 1 < s.size() && s[end + 1] == '+') {
 					end = s.find(' ', end + 3);
 				}
 			}
@@ -836,6 +858,7 @@ static vector<string> strToWords(string s)
 
 		if (end == string::npos) {
 			words.push_back(s.substr(start));
+			break;
 		} else {
 			string::size_type length = end - start;
 			words.push_back(s.substr(start, length));
@@ -3340,6 +3363,9 @@ vector<uint8_t> assembler(vector<char> *asmFile, vector<uint8_t> origBytecode,
 					o.insert(o.end(), ins.begin(), ins.end());
 					o.push_back(0);
 				}
+			} else if (s.find("{ {") < s.size() && s.find("} }") < s.size()) {
+				vector<DWORD> ins = assembleIns(s);
+				o.insert(o.end(), ins.begin(), ins.end());
 			} else if (s.find("{ {") < s.size()) {
 				s2 = s;
 				multiLine = true;
@@ -3378,17 +3404,36 @@ vector<uint8_t> assembler(vector<char> *asmFile, vector<uint8_t> origBytecode,
 			parse_errors->push_back(e);
 		}
 	}
-	codeStart = (DWORD*)(codeByteStart); // Endian bug, not that we care
-	auto it = origBytecode.begin() + chunkOffsets[codeChunk] + 8;
-	size_t codeSize = codeStart[1];
-	origBytecode.erase(it, it + codeSize);
+
+	if (multiLine && !s2.empty()) {
+		try {
+			vector<DWORD> ins = assembleIns(s2);
+			o.insert(o.end(), ins.begin(), ins.end());
+		} catch (...) {}
+	}
+
+	if (codeChunk >= (int)numChunks || chunkOffsets[codeChunk] + 8 > origBytecode.size())
+		return origBytecode;
+
+	size_t chunkPos = chunkOffsets[codeChunk];
+	size_t dataPos = chunkPos + 8;
+	size_t codeSize = *(DWORD*)(origBytecode.data() + chunkPos + 4);
+
+	if (dataPos + codeSize <= origBytecode.size()) {
+		origBytecode.erase(origBytecode.begin() + dataPos, origBytecode.begin() + dataPos + codeSize);
+	}
+
 	size_t newCodeSize = 4 * o.size();
-	codeStart[1] = (DWORD)newCodeSize;
 	vector<uint8_t> newCode(newCodeSize);
-	o[1] = (DWORD)o.size();
+	if (o.size() > 1) {
+		o[1] = (DWORD)o.size();
+	}
 	memcpy(newCode.data(), o.data(), newCodeSize);
-	it = origBytecode.begin() + chunkOffsets[codeChunk] + 8;
-	origBytecode.insert(it, newCode.begin(), newCode.end());
+
+	origBytecode.insert(origBytecode.begin() + dataPos, newCode.begin(), newCode.end());
+
+	*(DWORD*)(origBytecode.data() + chunkPos + 4) = (DWORD)newCodeSize;
+
 	DWORD* dwordBuffer = (DWORD*)origBytecode.data();
 	for (DWORD i = codeChunk + 1; i < numChunks; i++) {
 		dwordBuffer[8 + i] += (DWORD)(newCodeSize - codeSize);

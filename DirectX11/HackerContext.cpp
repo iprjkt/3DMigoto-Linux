@@ -517,6 +517,29 @@ void HackerContext::ProcessShaderOverride(ShaderOverride *shaderOverride, bool i
 // least on initial load when not hunting), but for now to keep things simpler
 // we will do all the auto patching from one place.
 //
+struct ShaderRegexMemCacheEntry {
+	ShaderRegexCache status;
+	vector<uint8_t> bytecode;
+	wstring tagline;
+};
+static std::unordered_map<UINT64, ShaderRegexMemCacheEntry> s_shader_regex_mem_cache;
+static CRITICAL_SECTION s_shader_regex_mem_cache_cs;
+static bool s_shader_regex_mem_cache_cs_init = false;
+
+static void InitShaderRegexMemCacheLock() {
+	if (!s_shader_regex_mem_cache_cs_init) {
+		InitializeCriticalSection(&s_shader_regex_mem_cache_cs);
+		s_shader_regex_mem_cache_cs_init = true;
+	}
+}
+
+void ClearShaderRegexMemCache() {
+	InitShaderRegexMemCacheLock();
+	EnterCriticalSection(&s_shader_regex_mem_cache_cs);
+	s_shader_regex_mem_cache.clear();
+	LeaveCriticalSection(&s_shader_regex_mem_cache_cs);
+}
+
 // We do want to avoid replacing a shader that has already been replaced from
 // ShaderFixes, either at shader creation time, or dynamically by the
 // mReloadedShaders map - user replaced shaders should always take priority
@@ -556,15 +579,48 @@ void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 
 	// (until config reload) regardless of whether we patch it or not:
 	orig_info->deferred_replacement_processed = true;
 
+	InitShaderRegexMemCacheLock();
+	EnterCriticalSection(&s_shader_regex_mem_cache_cs);
+	{
+		auto mem_it = s_shader_regex_mem_cache.find(hash);
+		if (mem_it != s_shader_regex_mem_cache.end()) {
+			ShaderRegexMemCacheEntry cached_entry = mem_it->second;
+			LeaveCriticalSection(&s_shader_regex_mem_cache_cs);
+
+			if (cached_entry.status == ShaderRegexCache::NO_MATCH || cached_entry.status == ShaderRegexCache::MATCH) {
+				goto out_drop;
+			}
+			if (cached_entry.status == ShaderRegexCache::PATCH && !cached_entry.bytecode.empty()) {
+				patched_bytecode = cached_entry.bytecode;
+				tagline = cached_entry.tagline;
+				goto create_replacement_shader;
+			}
+		} else {
+			LeaveCriticalSection(&s_shader_regex_mem_cache_cs);
+		}
+	}
+
 	switch (load_shader_regex_cache(hash, shader_type, &patched_bytecode, &tagline)) {
 	case ShaderRegexCache::NO_MATCH:
 		LogInfo("%S %016I64x has cached ShaderRegex miss\n", shader_type, hash);
+		InitShaderRegexMemCacheLock();
+		EnterCriticalSection(&s_shader_regex_mem_cache_cs);
+		s_shader_regex_mem_cache[hash] = { ShaderRegexCache::NO_MATCH, {}, {} };
+		LeaveCriticalSection(&s_shader_regex_mem_cache_cs);
 		goto out_drop;
 	case ShaderRegexCache::MATCH:
 		LogInfo("Loaded %S %016I64x command list from ShaderRegex cache\n", shader_type, hash);
+		InitShaderRegexMemCacheLock();
+		EnterCriticalSection(&s_shader_regex_mem_cache_cs);
+		s_shader_regex_mem_cache[hash] = { ShaderRegexCache::MATCH, {}, {} };
+		LeaveCriticalSection(&s_shader_regex_mem_cache_cs);
 		goto out_drop;
 	case ShaderRegexCache::PATCH:
 		LogInfo("Loaded %S %016I64x bytecode from ShaderRegex cache\n", shader_type, hash);
+		InitShaderRegexMemCacheLock();
+		EnterCriticalSection(&s_shader_regex_mem_cache_cs);
+		s_shader_regex_mem_cache[hash] = { ShaderRegexCache::PATCH, patched_bytecode, tagline };
+		LeaveCriticalSection(&s_shader_regex_mem_cache_cs);
 		break;
 	case ShaderRegexCache::NO_CACHE:
 		LogInfo("Performing deferred shader analysis on %S %016I64x...\n", shader_type, hash);
@@ -576,23 +632,44 @@ void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 
 					G->disassemble_undecipherable_custom_data);
 		} catch (const std::exception &e) {
 			LogInfo("    *** Exception in BinaryToAsmText: %s\n", e.what());
+			InitShaderRegexMemCacheLock();
+			EnterCriticalSection(&s_shader_regex_mem_cache_cs);
+			s_shader_regex_mem_cache[hash] = { ShaderRegexCache::NO_MATCH, {}, {} };
+			LeaveCriticalSection(&s_shader_regex_mem_cache_cs);
 			goto out_drop;
 		} catch (...) {
 			LogInfo("    *** Unknown exception in BinaryToAsmText\n");
+			InitShaderRegexMemCacheLock();
+			EnterCriticalSection(&s_shader_regex_mem_cache_cs);
+			s_shader_regex_mem_cache[hash] = { ShaderRegexCache::NO_MATCH, {}, {} };
+			LeaveCriticalSection(&s_shader_regex_mem_cache_cs);
 			goto out_drop;
 		}
-		if (asm_text.empty())
+		if (asm_text.empty()) {
+			InitShaderRegexMemCacheLock();
+			EnterCriticalSection(&s_shader_regex_mem_cache_cs);
+			s_shader_regex_mem_cache[hash] = { ShaderRegexCache::NO_MATCH, {}, {} };
+			LeaveCriticalSection(&s_shader_regex_mem_cache_cs);
 			goto out_drop;
+		}
 
 		try {
 			patch_regex = apply_shader_regex_groups(&asm_text, shader_type, &orig_info->shaderModel, hash, &tagline);
 		} catch (...) {
 			LogInfo("    *** Exception while patching shader\n");
+			InitShaderRegexMemCacheLock();
+			EnterCriticalSection(&s_shader_regex_mem_cache_cs);
+			s_shader_regex_mem_cache[hash] = { ShaderRegexCache::NO_MATCH, {}, {} };
+			LeaveCriticalSection(&s_shader_regex_mem_cache_cs);
 			goto out_drop;
 		}
 
 		if (!patch_regex) {
 			LogInfo("Patch did not apply\n");
+			InitShaderRegexMemCacheLock();
+			EnterCriticalSection(&s_shader_regex_mem_cache_cs);
+			s_shader_regex_mem_cache[hash] = { ShaderRegexCache::NO_MATCH, {}, {} };
+			LeaveCriticalSection(&s_shader_regex_mem_cache_cs);
 			goto out_drop;
 		}
 
@@ -608,6 +685,10 @@ void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 
 			hr = AssembleFluganWithSignatureParsing(&asm_vector, &patched_bytecode, &parse_errors);
 			if (FAILED(hr)) {
 				LogInfo("    *** Assembling patched shader failed\n");
+				InitShaderRegexMemCacheLock();
+				EnterCriticalSection(&s_shader_regex_mem_cache_cs);
+				s_shader_regex_mem_cache[hash] = { ShaderRegexCache::NO_MATCH, {}, {} };
+				LeaveCriticalSection(&s_shader_regex_mem_cache_cs);
 				goto out_drop;
 			}
 			// Parse errors are currently being treated as non-fatal on
@@ -619,12 +700,29 @@ void HackerContext::DeferredShaderReplacement(ID3D11DeviceChild *shader, UINT64 
 		} catch (const exception &e) {
 			LogOverlay(LOG_WARNING, "Error assembling ShaderRegex patched %016I64x-%S\n%S\n%s\n",
 					hash, shader_type, tagline.c_str(), e.what());
+			InitShaderRegexMemCacheLock();
+			EnterCriticalSection(&s_shader_regex_mem_cache_cs);
+			s_shader_regex_mem_cache[hash] = { ShaderRegexCache::NO_MATCH, {}, {} };
+			LeaveCriticalSection(&s_shader_regex_mem_cache_cs);
+			goto out_drop;
+		} catch (...) {
+			LogOverlay(LOG_WARNING, "Error assembling ShaderRegex patched %016I64x-%S\n%S\n",
+					hash, shader_type, tagline.c_str());
+			InitShaderRegexMemCacheLock();
+			EnterCriticalSection(&s_shader_regex_mem_cache_cs);
+			s_shader_regex_mem_cache[hash] = { ShaderRegexCache::NO_MATCH, {}, {} };
+			LeaveCriticalSection(&s_shader_regex_mem_cache_cs);
 			goto out_drop;
 		}
 
 		save_shader_regex_cache_bin(hash, shader_type, &patched_bytecode);
+		InitShaderRegexMemCacheLock();
+		EnterCriticalSection(&s_shader_regex_mem_cache_cs);
+		s_shader_regex_mem_cache[hash] = { ShaderRegexCache::PATCH, patched_bytecode, tagline };
+		LeaveCriticalSection(&s_shader_regex_mem_cache_cs);
 	}
 
+create_replacement_shader:
 	hr = (mOrigDevice1->*CreateShader)(patched_bytecode.data(), patched_bytecode.size(),
 			orig_info->linkage, &patched_shader);
 	CleanupShaderMaps(patched_shader);

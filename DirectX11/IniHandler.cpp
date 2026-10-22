@@ -1086,8 +1086,10 @@ static UINT64 GetIniHash(const wchar_t *section, const wchar_t *key, UINT64 def,
 		} else {
 			if (found)
 				*found = true;
-			if (key == L"Hash") {
-				if (wcsstr(section, L"VertexLimitRaise") != 0) {
+			if (!_wcsicmp(key, L"Hash")) {
+				std::wstring sec_lower = section ? section : L"";
+				std::transform(sec_lower.begin(), sec_lower.end(), sec_lower.begin(), ::towlower);
+				if (sec_lower.find(L"vertexlimitraise") != std::wstring::npos) {
 					genshin_character_vb_draw_hashes.insert(ret);
 				}
 			}
@@ -2690,6 +2692,10 @@ wchar_t *TextureOverrideIniKeys[] = {
 	L"expand_region_copy",
 	L"deny_cpu_read",
 	L"match_priority",
+	L"override_vertex_count",
+	L"override_byte_stride",
+	L"byte_width",
+	L"uav_byte_stride",
 	TEXTURE_OVERRIDE_FUZZY_MATCHES,
 	TEXTURE_OVERRIDE_DRAW_CALL_MATCHES,
 	NULL
@@ -2854,6 +2860,13 @@ static void parse_texture_override_common(const wchar_t *id, TextureOverride *ov
 	override->height = GetIniInt(id, L"Height", -1, NULL);
 	override->width_multiply = GetIniFloat(id, L"width_multiply", 1.0f, NULL);
 	override->height_multiply = GetIniFloat(id, L"height_multiply", 1.0f, NULL);
+
+	override->override_vertex_count = (UINT)GetIniInt(id, L"override_vertex_count", 0, NULL);
+	override->override_byte_stride = (UINT)GetIniInt(id, L"override_byte_stride", 0, NULL);
+	override->override_byte_width = (UINT)GetIniInt(id, L"byte_width", 0, NULL);
+	if (!override->override_byte_width && override->override_vertex_count && override->override_byte_stride) {
+		override->override_byte_width = override->override_vertex_count * override->override_byte_stride;
+	}
 
 	if (GetIniString(id, L"Iteration", 0, setting, MAX_PATH))
 	{
@@ -3147,6 +3160,14 @@ static void ParseTextureOverrideSections()
 
 			IniWarning("WARNING: [%S] missing Hash= or valid match options\n", id);
 			continue;
+		}
+
+		{
+			std::wstring id_lower = id ? id : L"";
+			std::transform(id_lower.begin(), id_lower.end(), id_lower.begin(), ::towlower);
+			if (id_lower.find(L"vertexlimitraise") != std::wstring::npos) {
+				genshin_character_vb_draw_hashes.insert(hash);
+			}
 		}
 
 		if (texture_override_section_has_fuzzy_match_keys(id))
@@ -4519,8 +4540,11 @@ static void MarkAllShadersDeferredUnprocessed()
 	// and just update the ShaderOverrides & filter_index
 }
 
+extern void ClearShaderRegexMemCache();
+
 void ReloadConfig(HackerDevice *device)
 {
+	ClearShaderRegexMemCache();
 	HackerContext *mHackerContext = device->GetHackerContext();
 
 	if (G->gWipeUserConfig)

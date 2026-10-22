@@ -751,11 +751,19 @@ HRESULT AssembleFluganWithSignatureParsing(vector<char> *assembly, vector<uint8_
 	// to Flugan's assembler. Later we should refactor this into the
 	// assembler itself.
 
-	hr = manufacture_shader_binary(assembly->data(), assembly->size(), &manufactured_bytecode);
-	if (FAILED(hr))
-		return E_FAIL;
+	try {
+		hr = manufacture_shader_binary(assembly->data(), assembly->size(), &manufactured_bytecode);
+		if (FAILED(hr))
+			return E_FAIL;
 
-	*result_bytecode = assembler(assembly, manufactured_bytecode, parse_errors);
+		*result_bytecode = assembler(assembly, manufactured_bytecode, parse_errors);
+	} catch (const exception &e) {
+		LogInfo("AssembleFluganWithSignatureParsing error: %s\n", e.what());
+		return E_FAIL;
+	} catch (...) {
+		LogInfo("AssembleFluganWithSignatureParsing unknown error\n");
+		return E_FAIL;
+	}
 
 	return S_OK;
 }
