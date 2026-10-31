@@ -2560,21 +2560,24 @@ float CommandListOperand::process_shader_filter(CommandListState *state)
 	if (!shader)
 		return -0.0;
 
-	ShaderMap::iterator shader_it = lookup_shader_hash(shader);
-
-	if (shader_it == G->mShaders.end())
+	UINT64 shader_hash_val = 0;
+	if (!lookup_shader_hash_safe(shader, &shader_hash_val))
 		return 0.0;
 
 	// Positive zero means shader bound with no ShaderOverride
-	ShaderOverrideMap::iterator override = lookup_shaderoverride(shader_it->second);
-	if (override == G->mShaderOverrideMap.end())
+	AcquireSRWLockShared(&G->mShaderOverrideLock);
+	auto override = lookup_shaderoverride(shader_hash_val);
+	if (override == G->mShaderOverrideMap.end()) {
+		ReleaseSRWLockShared(&G->mShaderOverrideLock);
 		return 0.0;
+	}
 
+	float ret_filter = 1.0;
 	if (override->second.filter_index != FLT_MAX)
-		return override->second.filter_index;
+		ret_filter = override->second.filter_index;
 
-	// Matched ShaderOverride / ShaderRegex, but no filter_index:
-	return 1.0;
+	ReleaseSRWLockShared(&G->mShaderOverrideLock);
+	return ret_filter;
 }
 
 void CommandList::clear()

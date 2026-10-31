@@ -376,6 +376,7 @@ void ShaderRegexGroup::link_command_lists_and_filter_index(UINT64 shader_hash)
 	if (command_list.commands.empty() && post_command_list.commands.empty() && filter_index == FLT_MAX)
 		return;
 
+	AcquireSRWLockExclusive(&G->mShaderOverrideLock);
 	shader_override = &G->mShaderOverrideMap[shader_hash];
 
 	// Initialise the ShaderOverride's command lists if they aren't already:
@@ -397,20 +398,26 @@ void ShaderRegexGroup::link_command_lists_and_filter_index(UINT64 shader_hash)
 	if (link) {
 		for (i = shader_override->command_list.commands.rbegin();
 		         i != shader_override->command_list.commands.rend(); i++) {
-			if (*i == link)
+			if (*i == link) {
+				ReleaseSRWLockExclusive(&G->mShaderOverrideLock);
 				return;
+			}
 		}
 		shader_override->command_list.commands.push_back(link);
 		if (post_link)
 			shader_override->post_command_list.commands.push_back(post_link);
+		ReleaseSRWLockExclusive(&G->mShaderOverrideLock);
 		return;
 	} else if (post_link) {
 		for (i = shader_override->post_command_list.commands.rbegin();
 		         i != shader_override->post_command_list.commands.rend(); i++) {
-			if (*i == post_link)
+			if (*i == post_link) {
+				ReleaseSRWLockExclusive(&G->mShaderOverrideLock);
 				return;
+			}
 		}
 		shader_override->post_command_list.commands.push_back(post_link);
+		ReleaseSRWLockExclusive(&G->mShaderOverrideLock);
 		return;
 	}
 
@@ -423,6 +430,8 @@ void ShaderRegexGroup::link_command_lists_and_filter_index(UINT64 shader_hash)
 
 	if (!post_command_list.commands.empty())
 		post_link = LinkCommandLists(&shader_override->post_command_list, &post_command_list, &ini_line);
+
+	ReleaseSRWLockExclusive(&G->mShaderOverrideLock);
 }
 
 bool unlink_shader_regex_command_lists_and_filter_index(UINT64 shader_hash)
@@ -432,9 +441,12 @@ bool unlink_shader_regex_command_lists_and_filter_index(UINT64 shader_hash)
 	RunLinkedCommandList *link;
 	bool ret = false;
 
+	AcquireSRWLockExclusive(&G->mShaderOverrideLock);
 	auto shader_override_i = G->mShaderOverrideMap.find(shader_hash);
-	if (shader_override_i == G->mShaderOverrideMap.end())
+	if (shader_override_i == G->mShaderOverrideMap.end()) {
+		ReleaseSRWLockExclusive(&G->mShaderOverrideLock);
 		return false;
+	}
 
 	shader_override = &shader_override_i->second;
 
@@ -463,6 +475,7 @@ bool unlink_shader_regex_command_lists_and_filter_index(UINT64 shader_hash)
 		ret = true;
 	}
 
+	ReleaseSRWLockExclusive(&G->mShaderOverrideLock);
 	return ret;
 }
 
@@ -474,7 +487,7 @@ struct ShaderRegexCacheHeader {
 	uint32_t num_matches;
 };
 
-ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type, vector<uint8_t> *bytecode, std::wstring *tagline)
+ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type, vector<uint8_t> *bytecode, std::wstring *tagline, std::vector<ShaderRegexGroup*> *matching_groups)
 {
 	ShaderRegexCache ret = ShaderRegexCache::NO_CACHE;
 	HANDLE meta_f = INVALID_HANDLE_VALUE;
@@ -536,6 +549,9 @@ ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type
 
 		if (header->patched && tagline)
 			tagline->append(std::wstring(L"[") + group->ini_section + std::wstring(L"]"));
+
+		if (matching_groups)
+			matching_groups->push_back(group);
 
 		group->link_command_lists_and_filter_index(hash);
 	}
@@ -643,7 +659,7 @@ void save_shader_regex_cache_bin(UINT64 hash, const wchar_t *shader_type, vector
 	fclose(f);
 }
 
-bool apply_shader_regex_groups(std::string *asm_text, const wchar_t *shader_type, std::string *shader_model, UINT64 hash, std::wstring *tagline)
+bool apply_shader_regex_groups(std::string *asm_text, const wchar_t *shader_type, std::string *shader_model, UINT64 hash, std::wstring *tagline, std::vector<ShaderRegexGroup*> *matching_groups)
 {
 	ShaderRegexGroups::iterator i;
 	ShaderRegexGroup *group;
@@ -678,6 +694,9 @@ bool apply_shader_regex_groups(std::string *asm_text, const wchar_t *shader_type
 
 		if (patch && tagline)
 			tagline->append(std::wstring(L"[") + group->ini_section + std::wstring(L"]"));
+
+		if (matching_groups)
+			matching_groups->push_back(group);
 
 		group->link_command_lists_and_filter_index(hash);
 	}

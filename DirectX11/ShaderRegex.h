@@ -16,8 +16,10 @@ enum class ShaderRegexCache {
 	PATCH
 };
 
-bool apply_shader_regex_groups(std::string *asm_text, const wchar_t *shader_type, std::string *shader_model, UINT64 hash, std::wstring *tagline);
-ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type, vector<uint8_t> *bytecode, std::wstring *tagline);
+class ShaderRegexGroup;
+
+bool apply_shader_regex_groups(std::string *asm_text, const wchar_t *shader_type, std::string *shader_model, UINT64 hash, std::wstring *tagline, std::vector<ShaderRegexGroup*> *matching_groups = NULL);
+ShaderRegexCache load_shader_regex_cache(UINT64 hash, const wchar_t *shader_type, vector<uint8_t> *bytecode, std::wstring *tagline, std::vector<ShaderRegexGroup*> *matching_groups = NULL);
 void save_shader_regex_cache_bin(UINT64 hash, const wchar_t *shader_type, vector<uint8_t> *bytecode);
 bool unlink_shader_regex_command_lists_and_filter_index(UINT64 shader_hash);
 

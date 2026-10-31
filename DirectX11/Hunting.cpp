@@ -810,6 +810,7 @@ static bool ReloadShader(wchar_t *shaderPath, wchar_t *fileName, HackerDevice *d
 	// This is probably unnecessary, because we modify already existing map entries, but
 	// for consistency, we'll wrap this.
 	EnterCriticalSectionPretty(&G->mCriticalSection);
+	AcquireSRWLockExclusive(&G->mReloadedShadersLock);
 
 	// Find the original shader bytecode in the mReloadedShaders Map. This map contains entries for all
 	// shaders from the ShaderFixes and ShaderCache folder, and can also include .bin files that were loaded directly.
@@ -845,11 +846,14 @@ static bool ReloadShader(wchar_t *shaderPath, wchar_t *fileName, HackerDevice *d
 			G->mReloadedShaders[oldShader].found = true;
 
 			// Check if the user has overridden the shader model:
-			ShaderOverrideMap::iterator override = lookup_shaderoverride(hash);
+			ShaderOverrideMap::iterator override;
+			AcquireSRWLockShared(&G->mShaderOverrideLock);
+			override = lookup_shaderoverride(hash);
 			if (override != G->mShaderOverrideMap.end()) {
 				if (override->second.model[0])
 					shaderModel = override->second.model;
 			}
+			ReleaseSRWLockShared(&G->mShaderOverrideLock);
 
 			// If shaderModel is "bin", that means the original was loaded as a binary object, and thus shaderModel is unknown.
 			// Disassemble the binary to get that string.
@@ -936,6 +940,7 @@ static bool ReloadShader(wchar_t *shaderPath, wchar_t *fileName, HackerDevice *d
 	}	// for every registered shader in mReloadedShaders 
 
 out:
+	ReleaseSRWLockExclusive(&G->mReloadedShadersLock);
 	LeaveCriticalSection(&G->mCriticalSection);
 
 	return rc;
@@ -1122,10 +1127,25 @@ static void CopyToFixes(UINT64 hash, HackerDevice *device)
 	bool asm_enabled = !!(G->marking_actions & MarkingAction::ASM);
 	string asmText, hlslText, errText;
 
+	OriginalShaderInfo shader_info;
+	bool found = false;
+
 	// The key of the map is the actual shader, we thus need to do a linear search to find our marked hash.
+	AcquireSRWLockShared(&G->mReloadedShadersLock);
 	for (const auto &iter : G->mReloadedShaders)
 	{
 		if (iter.second.hash == hash)
+		{
+			shader_info = iter.second;
+			found = true;
+			break;
+		}
+	}
+	ReleaseSRWLockShared(&G->mReloadedShadersLock);
+
+	if (found && shader_info.byteCode)
+	{
+		do
 		{
 			if (G->marking_actions & MarkingAction::REGEX) {
 				// We don't have the patched assembly saved anywhere, and even if we did save it
@@ -1134,19 +1154,19 @@ static void CopyToFixes(UINT64 hash, HackerDevice *device)
 				// RDEF making it not all that useful to look at. Instead we will disassemble the
 				// original shader now (with RDEF assuming the game didn't strip that), run
 				// ShaderRegex and output that.
-				asmText = BinaryToAsmText(iter.second.byteCode->GetBufferPointer(), iter.second.byteCode->GetBufferSize(), G->patch_cb_offsets);
+				asmText = BinaryToAsmText(shader_info.byteCode->GetBufferPointer(), shader_info.byteCode->GetBufferSize(), G->patch_cb_offsets);
 				if (asmText.empty())
 					break;
 				wstring tagline(L"// MANUALLY DUMPED ");
 				bool patched = false;
 				try {
-					patched = apply_shader_regex_groups(&asmText, iter.second.shaderType.c_str(), &iter.second.shaderModel, hash, &tagline);
+					patched = apply_shader_regex_groups(&asmText, shader_info.shaderType.c_str(), &shader_info.shaderModel, hash, &tagline);
 				} catch (...) {
 					LogOverlay(LOG_WARNING, "Exception while patching shader\n");
 				}
 
 				if (patched) {
-					success = WriteASM(&asmText, NULL, NULL, hash, iter.second, device, &tagline);
+					success = WriteASM(&asmText, NULL, NULL, hash, shader_info, device, &tagline);
 					break;
 				}
 			}
@@ -1154,12 +1174,12 @@ static void CopyToFixes(UINT64 hash, HackerDevice *device)
 			if (G->marking_actions & MarkingAction::HLSL) {
 				// TODO: Allow the decompiler to parse the patched CB offsets
 				// and move this line back to the common code path:
-				asmText = BinaryToAsmText(iter.second.byteCode->GetBufferPointer(), iter.second.byteCode->GetBufferSize(), false);
+				asmText = BinaryToAsmText(shader_info.byteCode->GetBufferPointer(), shader_info.byteCode->GetBufferSize(), false);
 				if (asmText.empty())
 					break;
 
 				// Save the decompiled text, and ASM text into the HLSL .txt source file:
-				success = WriteHLSL(&asmText, &hlslText, &errText, hash, iter.second, device, asm_enabled);
+				success = WriteHLSL(&asmText, &hlslText, &errText, hash, shader_info, device, asm_enabled);
 				if (success)
 					break;
 				else if (asm_enabled)
@@ -1167,11 +1187,11 @@ static void CopyToFixes(UINT64 hash, HackerDevice *device)
 			}
 
 			if (asm_enabled) {
-				asmText = BinaryToAsmText(iter.second.byteCode->GetBufferPointer(), iter.second.byteCode->GetBufferSize(), G->patch_cb_offsets);
+				asmText = BinaryToAsmText(shader_info.byteCode->GetBufferPointer(), shader_info.byteCode->GetBufferSize(), G->patch_cb_offsets);
 				if (asmText.empty())
 					break;
 
-				success = WriteASM(&asmText, &hlslText, &errText, hash, iter.second, device);
+				success = WriteASM(&asmText, &hlslText, &errText, hash, shader_info, device);
 				break;
 			}
 
@@ -1182,11 +1202,7 @@ static void CopyToFixes(UINT64 hash, HackerDevice *device)
 				if (unlink_shader_regex_command_lists_and_filter_index(hash))
 					LogOverlay(LOG_WARNING, "NOTICE: ShaderRegex command lists were dropped from the ShaderOverride\n");
 			}
-
-			// There can be more than one in the map with the same hash, but we only need a single copy to
-			// make the hlsl file output, so exit with success.
-			break;
-		}
+		} while (false);
 	}
 
 	if (success)
@@ -1224,6 +1240,7 @@ static void RevertMissingShaders()
 	ID3D11DeviceChild* replacement = NULL;
 	ShaderReloadMap::iterator i;
 
+	AcquireSRWLockExclusive(&G->mReloadedShadersLock);
 	for (i = G->mReloadedShaders.begin(); i != G->mReloadedShaders.end(); i++) {
 		if (i->second.found)
 			continue;
@@ -1254,6 +1271,7 @@ static void RevertMissingShaders()
 		// will be [re]applied:
 		i->second.deferred_replacement_candidate = true;
 	}
+	ReleaseSRWLockExclusive(&G->mReloadedShadersLock);
 }
 
 // Now that we are adding ASM files to the mix, we need to decide who gets precedence.
@@ -1284,8 +1302,10 @@ static void ReloadFixes(HackerDevice *device, void *private_data)
 		// of these actually takes effect in the current frame.
 		ClearNotices();
 
+		AcquireSRWLockExclusive(&G->mReloadedShadersLock);
 		for (ShaderReloadMap::iterator iter = G->mReloadedShaders.begin(); iter != G->mReloadedShaders.end(); iter++)
 			iter->second.found = false;
+		ReleaseSRWLockExclusive(&G->mReloadedShadersLock);
 
 		// Strict file name format, to allow renaming out of the way. 
 		// "00aa7fa12bbf66b3-ps_replace.txt" or "00aa7fa12bbf66b3-vs.txt"

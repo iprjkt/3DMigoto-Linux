@@ -594,6 +594,7 @@ static void RegisterForReload(ID3D11DeviceChild* ppShader, UINT64 hash, wstring 
 	if (pClassLinkage)
 		pClassLinkage->AddRef();
 
+	AcquireSRWLockExclusive(&G->mReloadedShadersLock);
 	G->mReloadedShaders[ppShader].hash = hash;
 	G->mReloadedShaders[ppShader].shaderType = shaderType;
 	G->mReloadedShaders[ppShader].shaderModel = shaderModel;
@@ -604,6 +605,7 @@ static void RegisterForReload(ID3D11DeviceChild* ppShader, UINT64 hash, wstring 
 	G->mReloadedShaders[ppShader].infoText = text;
 	G->mReloadedShaders[ppShader].deferred_replacement_candidate = deferred_replacement_candidate;
 	G->mReloadedShaders[ppShader].deferred_replacement_processed = false;
+	ReleaseSRWLockExclusive(&G->mReloadedShadersLock);
 }
 
 
@@ -1421,6 +1423,7 @@ HRESULT HackerDevice::ProcessShaderNotFoundInShaderFixes(UINT64 hash,
 				// Also add the original shader to the original shaders
 				// map so that if it is later replaced marking_mode =
 				// original and depth buffer filtering will work:
+				AcquireSRWLockExclusive(&G->mReloadedShadersLock);
 				if (lookup_original_shader(*ppShader) == end(G->mOriginalShaders)) {
 					// Since we are both returning *and* storing this we need to
 					// bump the refcount to 2, otherwise it could get freed and we
@@ -1430,6 +1433,7 @@ HRESULT HackerDevice::ProcessShaderNotFoundInShaderFixes(UINT64 hash,
 					(*ppShader)->AddRef();
 					G->mOriginalShaders[*ppShader] = *ppShader;
 				}
+				ReleaseSRWLockExclusive(&G->mReloadedShadersLock);
 			}
 		LeaveCriticalSection(&G->mCriticalSection);
 	}
@@ -1484,6 +1488,7 @@ void CleanupShaderMaps(ID3D11DeviceChild *handle)
 
 	EnterCriticalSectionPretty(&G->mCriticalSection);
 
+	AcquireSRWLockExclusive(&G->mShadersLock);
 	{
 		ShaderMap::iterator i = lookup_shader_hash(handle);
 		if (i != G->mShaders.end()) {
@@ -1491,7 +1496,9 @@ void CleanupShaderMaps(ID3D11DeviceChild *handle)
 			G->mShaders.erase(i);
 		}
 	}
+	ReleaseSRWLockExclusive(&G->mShadersLock);
 
+	AcquireSRWLockExclusive(&G->mReloadedShadersLock);
 	{
 		ShaderReloadMap::iterator i = lookup_reloaded_shader(handle);
 		if (i != G->mReloadedShaders.end()) {
@@ -1514,6 +1521,7 @@ void CleanupShaderMaps(ID3D11DeviceChild *handle)
 			G->mOriginalShaders.erase(i);
 		}
 	}
+	ReleaseSRWLockExclusive(&G->mReloadedShadersLock);
 
 	LeaveCriticalSection(&G->mCriticalSection);
 }
@@ -2196,12 +2204,21 @@ STDMETHODIMP HackerDevice::CreateBuffer(THIS_
 	// Override custom settings?
 	pNewDesc = process_texture_override(hash, mStereoHandle, pDesc, &newDesc, &oldMode);
 
-	bool is_vb_raise = (genshin_character_vb_draw_hashes.find(hash) != genshin_character_vb_draw_hashes.end());
+	bool is_vb_raise = false;
+	if (pDesc && (pDesc->BindFlags & (D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_STREAM_OUTPUT)) &&
+	    !(pDesc->BindFlags & (D3D11_BIND_CONSTANT_BUFFER | D3D11_BIND_INDEX_BUFFER))) {
+		is_vb_raise = (genshin_character_vb_draw_hashes.find(hash) != genshin_character_vb_draw_hashes.end());
+	}
 	if (is_vb_raise || (pNewDesc && pDesc && pNewDesc->ByteWidth != pDesc->ByteWidth)) {
 		if (pDesc) {
 			newDesc = *pNewDesc;
 			if (is_vb_raise) {
 				newDesc.ByteWidth = max(newDesc.ByteWidth, 8800000U);
+			}
+			if ((newDesc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED) && newDesc.StructureByteStride > 0) {
+				UINT rem = newDesc.ByteWidth % newDesc.StructureByteStride;
+				if (rem != 0)
+					newDesc.ByteWidth += (newDesc.StructureByteStride - rem);
 			}
 			pNewDesc = &newDesc;
 		}
@@ -2652,8 +2669,10 @@ STDMETHODIMP HackerDevice::CreateShader(THIS_
 
 	if (hr == S_OK) {
 		EnterCriticalSectionPretty(&G->mCriticalSection);
-			G->mShaders[*ppShader] = hash;
-			LogDebugW(L"    %ls: handle = %p, hash = %016I64x\n", shaderType, *ppShader, hash);
+		AcquireSRWLockExclusive(&G->mShadersLock);
+		G->mShaders[*ppShader] = hash;
+		ReleaseSRWLockExclusive(&G->mShadersLock);
+		LogDebugW(L"    %ls: handle = %p, hash = %016I64x\n", shaderType, *ppShader, hash);
 		LeaveCriticalSection(&G->mCriticalSection);
 	}
 

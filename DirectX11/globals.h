@@ -583,6 +583,10 @@ struct Globals
 	//                                                                   //
 	///////////////////////////////////////////////////////////////////////
 	CRITICAL_SECTION mResourcesLock;
+
+	SRWLOCK mShadersLock;
+	SRWLOCK mReloadedShadersLock;
+	SRWLOCK mShaderOverrideLock;
 	ResourceMap mResources;
 
 	std::unordered_map<ID3D11Asynchronous*, AsyncQueryType> mQueryTypes;
@@ -700,7 +704,10 @@ struct Globals
 		gWipeUserConfig(false),
 		user_config_dirty(0),
 		gLogInput(false),
-		dump_all_profiles(false)
+		dump_all_profiles(false),
+		mShadersLock(SRWLOCK_INIT),
+		mReloadedShadersLock(SRWLOCK_INIT),
+		mShaderOverrideLock(SRWLOCK_INIT)
 	{
 		int i;
 
@@ -771,6 +778,38 @@ static struct TLS* get_tls()
 }
 
 extern Globals *G;
+
+static inline bool lookup_shader_hash_safe(ID3D11DeviceChild *shader, UINT64 *out_hash)
+{
+	if (!shader) return false;
+	AcquireSRWLockShared(&G->mShadersLock);
+	auto it = G->mShaders.find(shader);
+	bool found = (it != G->mShaders.end());
+	if (found && out_hash)
+		*out_hash = it->second;
+	ReleaseSRWLockShared(&G->mShadersLock);
+	return found;
+}
+
+static inline ID3D11DeviceChild* lookup_reloaded_shader_replacement_safe(ID3D11DeviceChild *shader)
+{
+	if (!shader) return NULL;
+	AcquireSRWLockShared(&G->mReloadedShadersLock);
+	auto it = G->mReloadedShaders.find(shader);
+	ID3D11DeviceChild *rep = (it != G->mReloadedShaders.end()) ? it->second.replacement : NULL;
+	ReleaseSRWLockShared(&G->mReloadedShadersLock);
+	return rep;
+}
+
+static inline ID3D11DeviceChild* lookup_original_shader_safe(ID3D11DeviceChild *shader)
+{
+	if (!shader) return NULL;
+	AcquireSRWLockShared(&G->mReloadedShadersLock);
+	auto it = G->mOriginalShaders.find(shader);
+	ID3D11DeviceChild *orig = (it != G->mOriginalShaders.end()) ? it->second : NULL;
+	ReleaseSRWLockShared(&G->mReloadedShadersLock);
+	return orig;
+}
 
 static inline ShaderMap::iterator lookup_shader_hash(ID3D11DeviceChild *shader)
 {

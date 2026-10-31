@@ -2287,6 +2287,7 @@ static void ParseShaderOverrideSections()
 	// are unlikely to be changing much, but for consistency.
 	//  We actually already lock the entire config reload, so this is redundant -DSS
 	EnterCriticalSectionPretty(&G->mCriticalSection);
+	AcquireSRWLockExclusive(&G->mShaderOverrideLock);
 
 	G->mShaderOverrideMap.clear();
 
@@ -2344,6 +2345,7 @@ static void ParseShaderOverrideSections()
 
 		warn_deprecated_shaderoverride_options(id, override);
 	}
+	ReleaseSRWLockExclusive(&G->mShaderOverrideLock);
 	LeaveCriticalSection(&G->mCriticalSection);
 }
 
@@ -4525,6 +4527,7 @@ static void MarkAllShadersDeferredUnprocessed()
 {
 	ShaderReloadMap::iterator i;
 
+	AcquireSRWLockExclusive(&G->mReloadedShadersLock);
 	for (i = G->mReloadedShaders.begin(); i != G->mReloadedShaders.end(); i++) {
 		// Whenever we reload the config we clear the processed flag on
 		// all auto patched shaders to ensure that they will be
@@ -4535,6 +4538,7 @@ static void MarkAllShadersDeferredUnprocessed()
 		// any that are loaded from disk:
 		i->second.deferred_replacement_processed = false;
 	}
+	ReleaseSRWLockExclusive(&G->mReloadedShadersLock);
 
 	// TODO: If ShaderRegex hash is unchanged leave these shaders in place
 	// and just update the ShaderOverrides & filter_index
