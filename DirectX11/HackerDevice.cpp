@@ -1729,7 +1729,36 @@ STDMETHODIMP HackerDevice::CreateUnorderedAccessView(THIS_
 	/* [annotation] */
 	__out_opt  ID3D11UnorderedAccessView **ppUAView)
 {
-	return mOrigDevice1->CreateUnorderedAccessView(pResource, pDesc, ppUAView);
+	D3D11_UNORDERED_ACCESS_VIEW_DESC newDesc;
+	const D3D11_UNORDERED_ACCESS_VIEW_DESC *pActualDesc = pDesc;
+
+	if (pResource && pDesc && pDesc->ViewDimension == D3D11_UAV_DIMENSION_BUFFER) {
+		uint32_t hash = 0;
+		EnterCriticalSectionPretty(&G->mResourcesLock);
+		auto it = G->mResources.find(pResource);
+		if (it != G->mResources.end())
+			hash = it->second.hash;
+		LeaveCriticalSection(&G->mResourcesLock);
+
+		if (hash) {
+			TextureOverrideMap::iterator to_it = lookup_textureoverride(hash);
+			if (to_it != G->mTextureOverrideMap.end()) {
+				for (const TextureOverride &to : to_it->second) {
+					UINT stride = to.uav_byte_stride ? to.uav_byte_stride : to.override_byte_stride;
+					if (to.override_byte_width > 0 && stride > 0) {
+						newDesc = *pDesc;
+						UINT newElements = to.override_byte_width / stride;
+						if (newElements > newDesc.Buffer.NumElements) {
+							newDesc.Buffer.NumElements = newElements;
+							pActualDesc = &newDesc;
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return mOrigDevice1->CreateUnorderedAccessView(pResource, pActualDesc, ppUAView);
 }
 
 STDMETHODIMP HackerDevice::CreateRenderTargetView(THIS_

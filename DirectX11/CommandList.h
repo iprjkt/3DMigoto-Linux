@@ -909,6 +909,7 @@ enum class ParamOverrideType {
 	SLI,
 	HUNTING,
 	FRAME_ANALYSIS,
+	EFFECTIVE_DPI,
 };
 static EnumName_t<const wchar_t *, ParamOverrideType> ParamOverrideTypeNames[] = {
 	{L"rt_width", ParamOverrideType::RT_WIDTH},
@@ -917,6 +918,7 @@ static EnumName_t<const wchar_t *, ParamOverrideType> ParamOverrideTypeNames[] =
 	{L"res_height", ParamOverrideType::RES_HEIGHT},
 	{L"window_width", ParamOverrideType::WINDOW_WIDTH},
 	{L"window_height", ParamOverrideType::WINDOW_HEIGHT},
+	{L"effective_dpi", ParamOverrideType::EFFECTIVE_DPI},
 	{L"vertex_count", ParamOverrideType::VERTEX_COUNT},
 	{L"index_count", ParamOverrideType::INDEX_COUNT},
 	{L"instance_count", ParamOverrideType::INSTANCE_COUNT},

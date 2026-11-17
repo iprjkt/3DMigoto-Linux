@@ -15,9 +15,9 @@ inline int operator | (ENUMTYPE a, ENUMTYPE b) { return (((int)a) | ((int)b)); }
 inline int operator & (ENUMTYPE a, ENUMTYPE b) { return (((int)a) & ((int)b)); } \
 inline int operator ^ (ENUMTYPE a, ENUMTYPE b) { return (((int)a) ^ ((int)b)); } \
 inline int operator ~ (ENUMTYPE a) { return (~((int)a)); } \
-inline ENUMTYPE &operator |= (ENUMTYPE &a, ENUMTYPE b) { return (ENUMTYPE &)(((int &)a) |= ((int)b)); } \
-inline ENUMTYPE &operator &= (ENUMTYPE &a, ENUMTYPE b) { return (ENUMTYPE &)(((int &)a) &= ((int)b)); } \
-inline ENUMTYPE &operator ^= (ENUMTYPE &a, ENUMTYPE b) { return (ENUMTYPE &)(((int &)a) ^= ((int)b)); } \
+inline ENUMTYPE &operator |= (ENUMTYPE &a, ENUMTYPE b) { a = (ENUMTYPE)(((int)a) | ((int)b)); return a; } \
+inline ENUMTYPE &operator &= (ENUMTYPE &a, ENUMTYPE b) { a = (ENUMTYPE)(((int)a) & ((int)b)); return a; } \
+inline ENUMTYPE &operator ^= (ENUMTYPE &a, ENUMTYPE b) { a = (ENUMTYPE)(((int)a) ^ ((int)b)); return a; } \
 inline bool operator || (ENUMTYPE a,  ENUMTYPE b) { return (((int)a) || ((int)b)); } \
 inline bool operator || (    bool a,  ENUMTYPE b) { return (((int)a) || ((int)b)); } \
 inline bool operator || (ENUMTYPE a,      bool b) { return (((int)a) || ((int)b)); } \

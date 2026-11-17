@@ -2866,6 +2866,7 @@ static void parse_texture_override_common(const wchar_t *id, TextureOverride *ov
 	override->override_vertex_count = (UINT)GetIniInt(id, L"override_vertex_count", 0, NULL);
 	override->override_byte_stride = (UINT)GetIniInt(id, L"override_byte_stride", 0, NULL);
 	override->override_byte_width = (UINT)GetIniInt(id, L"byte_width", 0, NULL);
+	override->uav_byte_stride = (UINT)GetIniInt(id, L"uav_byte_stride", 0, NULL);
 	if (!override->override_byte_width && override->override_vertex_count && override->override_byte_stride) {
 		override->override_byte_width = override->override_vertex_count * override->override_byte_stride;
 	}

@@ -309,6 +309,7 @@ struct TextureOverride {
 	UINT override_byte_width;
 	UINT override_vertex_count;
 	UINT override_byte_stride;
+	UINT uav_byte_stride;
 
 	TextureOverride() :
 		stereoMode(-1),
@@ -325,7 +326,8 @@ struct TextureOverride {
 		priority(0),
 		override_byte_width(0),
 		override_vertex_count(0),
-		override_byte_stride(0)
+		override_byte_stride(0),
+		uav_byte_stride(0)
 	{}
 };
 

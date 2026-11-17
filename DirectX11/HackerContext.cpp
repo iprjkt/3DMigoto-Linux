@@ -1009,6 +1009,14 @@ void HackerContext::AfterDraw(DrawContext &data)
 		}
 	}
 
+	if (data.call_info.ib_overridden) {
+		mOrigContext1->IASetIndexBuffer(data.call_info.orig_ib, data.call_info.orig_ib_format, data.call_info.orig_ib_offset);
+		if (data.call_info.orig_ib)
+			data.call_info.orig_ib->Release();
+		data.call_info.orig_ib = NULL;
+		data.call_info.ib_overridden = false;
+	}
+
 	if (mHackerDevice->mStereoHandle && data.oldSeparation != FLT_MAX) {
 		NvAPIOverride();
 		if (NVAPI_OK != Profiling::NvAPI_Stereo_SetSeparation(mHackerDevice->mStereoHandle, data.oldSeparation))

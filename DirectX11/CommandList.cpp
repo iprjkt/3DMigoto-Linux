@@ -2979,6 +2979,8 @@ float CommandListOperand::evaluate(CommandListState *state, HackerDevice *device
 			return (float)G->hunting;
 		case ParamOverrideType::FRAME_ANALYSIS:
 			return G->analyse_frame;
+		case ParamOverrideType::EFFECTIVE_DPI:
+			return 96.0f;
 		// XXX: If updating this list, be sure to also update
 		// XXX: operand_allowed_in_context()
 	}
@@ -3160,7 +3162,7 @@ static const wchar_t *operator_tokens[] = {
 	// Two character tokens next:
 	L"==", L"!=", L"//", L"<=", L">=", L"&&", L"||", L"**",
 	// Single character tokens last:
-	L"(", L")", L"!", L"*", L"/", L"%", L"+", L"-", L"<", L">",
+	L"(", L")", L"!", L"*", L"/", L"%", L"+", L"-", L"<", L">", L"&", L"^", L"|",
 };
 
 class CommandListSyntaxError: public exception
@@ -3271,6 +3273,24 @@ next_token:
 					continue;
 				}
 				throw CommandListSyntaxError(L"Unrecognised identifier: " + token, friendly_pos);
+			}
+		}
+
+		// Binary integer literals (e.g. 0b1010):
+		if (remain.length() > 2 && remain[0] == L'0' && (remain[1] == L'b' || remain[1] == L'B')) {
+			size_t bpos = remain.find_first_not_of(L"01", 2);
+			if (bpos > 2) {
+				pos = (bpos == wstring::npos) ? remain.length() : bpos;
+				token = remain.substr(0, pos);
+				operand = make_shared<CommandListOperand>(friendly_pos, token);
+				if (operand->parse(&token, ini_namespace, scope)) {
+					tree->tokens.emplace_back(std::move(operand));
+					LogDebug("      Binary Literal: \"%S\"\n", tree->tokens.back()->token.c_str());
+					if (last_was_operand)
+						throw CommandListSyntaxError(L"Unexpected identifier", friendly_pos);
+					last_was_operand = true;
+					continue;
+				}
 			}
 		}
 
@@ -3386,6 +3406,10 @@ DEFINE_OPERATOR(inequality_operator,    "!=", (lhs != rhs));
 DEFINE_OPERATOR(identical_operator,     "===",(*(uint32_t*)&lhs == *(uint32_t*)&rhs));
 DEFINE_OPERATOR(not_identical_operator, "!==",(*(uint32_t*)&lhs != *(uint32_t*)&rhs));
 
+DEFINE_OPERATOR(bitwise_and_operator,   "&",  ((float)(((uint32_t)lhs) & ((uint32_t)rhs))));
+DEFINE_OPERATOR(bitwise_xor_operator,   "^",  ((float)(((uint32_t)lhs) ^ ((uint32_t)rhs))));
+DEFINE_OPERATOR(bitwise_or_operator,    "|",  ((float)(((uint32_t)lhs) | ((uint32_t)rhs))));
+
 DEFINE_OPERATOR(and_operator,           "&&", (lhs && rhs));
 
 DEFINE_OPERATOR(or_operator,            "||", (lhs || rhs));
@@ -3421,6 +3445,15 @@ static CommandListOperatorFactoryBase *equality_operators[] = {
 	&inequality_operator,
 	&identical_operator,
 	&not_identical_operator,
+};
+static CommandListOperatorFactoryBase *bitwise_and_operators[] = {
+	&bitwise_and_operator,
+};
+static CommandListOperatorFactoryBase *bitwise_xor_operators[] = {
+	&bitwise_xor_operator,
+};
+static CommandListOperatorFactoryBase *bitwise_or_operators[] = {
+	&bitwise_or_operator,
 };
 static CommandListOperatorFactoryBase *and_operators[] = {
 	&and_operator,
@@ -3625,6 +3658,9 @@ bool CommandListExpression::parse(const wstring *expression, const wstring *ini_
 		transform_operators_recursive(&tree, add_subtract_operators, ARRAYSIZE(add_subtract_operators), false, false);
 		transform_operators_recursive(&tree, relational_operators, ARRAYSIZE(relational_operators), false, false);
 		transform_operators_recursive(&tree, equality_operators, ARRAYSIZE(equality_operators), false, false);
+		transform_operators_recursive(&tree, bitwise_and_operators, ARRAYSIZE(bitwise_and_operators), false, false);
+		transform_operators_recursive(&tree, bitwise_xor_operators, ARRAYSIZE(bitwise_xor_operators), false, false);
+		transform_operators_recursive(&tree, bitwise_or_operators, ARRAYSIZE(bitwise_or_operators), false, false);
 		transform_operators_recursive(&tree, and_operators, ARRAYSIZE(and_operators), false, false);
 		transform_operators_recursive(&tree, or_operators, ARRAYSIZE(or_operators), false, false);
 
@@ -3901,6 +3937,7 @@ static bool operand_allowed_in_context(ParamOverrideType type, CommandListScope 
 		case ParamOverrideType::STEREO_AVAILABLE:
 		case ParamOverrideType::SLI:
 		case ParamOverrideType::HUNTING:
+		case ParamOverrideType::EFFECTIVE_DPI:
 			return true;
 	}
 	return false;
@@ -4007,6 +4044,17 @@ bool CommandListOperand::parse(const wstring *operand, const wstring *ini_namesp
 {
 	CommandListVariable *var = NULL;
 	int ret, len1;
+
+	// Try parsing value as a binary literal (0b...)
+	if (operand->length() > 2 && (*operand)[0] == L'0' && ((*operand)[1] == L'b' || (*operand)[1] == L'B')) {
+		wchar_t *endptr = NULL;
+		unsigned long bval = wcstoul(operand->c_str() + 2, &endptr, 2);
+		if (endptr && *endptr == L'\0') {
+			val = (float)bval;
+			type = ParamOverrideType::VALUE;
+			return operand_allowed_in_context(type, scope);
+		}
+	}
 
 	// Try parsing value as a float
 	ret = swscanf_s(operand->c_str(), L"%f%n", &val, &len1);
@@ -4350,6 +4398,20 @@ void CustomResource::Substantiate(ID3D11Device *mOrigDevice1, StereoHandle mSter
 	// required and cannot be deduced at parse time.
 	this->bind_flags = (D3D11_BIND_FLAG)(this->bind_flags | bind_flags);
 	this->misc_flags = (D3D11_RESOURCE_MISC_FLAG)(this->misc_flags | misc_flags);
+
+	if (this->bind_flags == 0 && override_bind_flags == CustomResourceBindFlags::INVALID) {
+		if (!filename.empty() || initial_data) {
+			this->bind_flags = D3D11_BIND_SHADER_RESOURCE;
+			if (override_type == CustomResourceType::BUFFER) {
+				if (override_stride != -1)
+					this->bind_flags = (D3D11_BIND_FLAG)(this->bind_flags | D3D11_BIND_VERTEX_BUFFER);
+				if (override_format == DXGI_FORMAT_R32_UINT || override_format == DXGI_FORMAT_R16_UINT)
+					this->bind_flags = (D3D11_BIND_FLAG)(this->bind_flags | D3D11_BIND_INDEX_BUFFER);
+			}
+		} else {
+			this->bind_flags = (D3D11_BIND_FLAG)(D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS);
+		}
+	}
 
 	// If the resource section has enough information to create a resource
 	// we do so the first time it is loaded from. The reason we do it this
@@ -6020,6 +6082,20 @@ void ResourceCopyTarget::SetResource(
 
 	case ResourceCopyTargetType::INDEX_BUFFER:
 		buf = (ID3D11Buffer*)res;
+		if (state->call_info) {
+			if (!state->post) {
+				if (!state->call_info->ib_overridden) {
+					mOrigContext1->IAGetIndexBuffer(&state->call_info->orig_ib, &state->call_info->orig_ib_format, &state->call_info->orig_ib_offset);
+					state->call_info->ib_overridden = true;
+				}
+			} else if (state->call_info->ib_overridden) {
+				if (state->call_info->orig_ib) {
+					state->call_info->orig_ib->Release();
+					state->call_info->orig_ib = NULL;
+				}
+				state->call_info->ib_overridden = false;
+			}
+		}
 		mOrigContext1->IASetIndexBuffer(buf, format, offset);
 		break;
 
@@ -7168,10 +7244,14 @@ static ID3D11View* _CreateCompatibleView(
 
 	hr = (state->mOrigDevice1->*CreateView)(resource, pDesc, &view);
 	if (FAILED(hr)) {
-		LogInfo("Resource copy CreateCompatibleView failed: %x\n", hr);
-		if (pDesc)
-			LogViewDesc(pDesc);
-		LogResourceDesc(resource);
+		static int s_view_fail_log_count = 0;
+		if (gLogDebug || s_view_fail_log_count < 16) {
+			s_view_fail_log_count++;
+			LogInfo("Resource copy CreateCompatibleView failed: %x\n", hr);
+			if (pDesc)
+				LogViewDesc(pDesc);
+			LogResourceDesc(resource);
+		}
 		return NULL;
 	}
 

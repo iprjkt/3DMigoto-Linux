@@ -30,6 +30,11 @@ struct DrawCallInfo
 
 	bool skip, hunting_skip;
 
+	ID3D11Buffer *orig_ib;
+	DXGI_FORMAT orig_ib_format;
+	UINT orig_ib_offset;
+	bool ib_overridden;
+
 	DrawCallInfo() :
 		type(DrawCall::Invalid),
 		VertexCount(0),
@@ -44,7 +49,11 @@ struct DrawCallInfo
 		indirect_buffer(NULL),
 		args_offset(0),
 		skip(false),
-		hunting_skip(false)
+		hunting_skip(false),
+		orig_ib(NULL),
+		orig_ib_format(DXGI_FORMAT_UNKNOWN),
+		orig_ib_offset(0),
+		ib_overridden(false)
 	{}
 
 	DrawCallInfo(DrawCall type,
@@ -65,7 +74,11 @@ struct DrawCallInfo
 		indirect_buffer(indirect_buffer),
 		args_offset(args_offset),
 		skip(false),
-		hunting_skip(false)
+		hunting_skip(false),
+		orig_ib(NULL),
+		orig_ib_format(DXGI_FORMAT_UNKNOWN),
+		orig_ib_offset(0),
+		ib_overridden(false)
 	{}
 };
 
