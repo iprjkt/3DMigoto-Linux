@@ -23,6 +23,7 @@ This fork eliminates the architectural incompatibilities that previously prevent
   - [6. F10 Reload Stability & Shader State Integrity](#6-f10-reload-stability--shader-state-integrity)
   - [7. Thread-Safe Concurrency & Non-Blocking ShaderRegex Cache](#7-thread-safe-concurrency--non-blocking-shaderregex-cache)
   - [8. Dynamic VertexLimitRaise & Assembler Fixes](#8-dynamic-vertexlimitraise--assembler-fixes)
+  - [9. GCC Strict-Aliasing, Implicit IB Restoration & SRMI/XXMI Compatibility](#9-gcc-strict-aliasing-implicit-ib-restoration--srmixxmi-compatibility)
 - [Requirements](#requirements)
 - [Setup & Installation](#setup--installation)
   - [Deployment Layout](#deployment-layout)
@@ -75,8 +76,14 @@ Stock 3DMigoto was originally authored for native Windows and MSVC. When deploye
 
 ### 8. Dynamic VertexLimitRaise & Assembler Fixes
 - **Fix**:
-  - Dynamically registers `[TextureOverride*VertexLimitRaise*]` hashes and supports `override_vertex_count`, `override_byte_stride`, and `byte_width` in `[TextureOverride]`, while guarding `CreateBuffer` so constant/index buffers are never resized and structured buffers preserve stride alignment.
+  - Dynamically registers `[TextureOverride*VertexLimitRaise*]` hashes and supports `override_vertex_count`, `override_byte_stride`, `uav_byte_stride`, and `byte_width` in `[TextureOverride]`, while guarding `CreateBuffer` so constant/index buffers are never resized, structured buffers preserve stride alignment, and `CreateUnorderedAccessView` expands `Buffer.NumElements` for compute-skinned meshes.
   - Fixed assembler pointer invalidation on vector reallocation, multi-component `l(...)` operands, single-line immediate constant buffers, and infinite loops in `strToWords()`.
+
+### 9. GCC Strict-Aliasing, Implicit IB Restoration & SRMI/XXMI Compatibility
+- **Fix**:
+  - Replaced strict-aliasing UB `(int&)a |= (int)b` in `SENSIBLE_ENUM` (`util_min.h`) with standard `static_cast` assignments so MinGW-w64 `-O2` preserves `CustomResource::bind_flags` propagation, preventing `bind_flags=0x000` resource failures and `CreateCompatibleView` log-flood throttling.
+  - Added automatic index buffer save/restore in `HackerContext::AfterDraw` so multi-submesh/weapon overrides do not drop subsequent `DrawIndexed` calls when Unity reuses implicitly bound index buffers.
+  - Added `effective_dpi`, binary literals (`0b...`), and bitwise operators (`&`, `^`, `|`) to the command list expression evaluator for modern SRMI/XXMI packages and mods.
 
 ---
 
