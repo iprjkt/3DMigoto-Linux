@@ -1732,33 +1732,57 @@ STDMETHODIMP HackerDevice::CreateUnorderedAccessView(THIS_
 	D3D11_UNORDERED_ACCESS_VIEW_DESC newDesc;
 	const D3D11_UNORDERED_ACCESS_VIEW_DESC *pActualDesc = pDesc;
 
-	if (pResource && pDesc && pDesc->ViewDimension == D3D11_UAV_DIMENSION_BUFFER) {
-		uint32_t hash = 0;
-		EnterCriticalSectionPretty(&G->mResourcesLock);
-		auto it = G->mResources.find(pResource);
-		if (it != G->mResources.end())
-			hash = it->second.hash;
-		LeaveCriticalSection(&G->mResourcesLock);
+	if (pResource && pDesc && pDesc->ViewDimension == D3D11_UAV_DIMENSION_BUFFER &&
+	    G->mResizedBufferCount.load(std::memory_order_relaxed) > 0) {
+		UINT origByteWidth = 0;
+		AcquireSRWLockShared(&G->mResizedBuffersLock);
+		auto it = G->mResizedBuffers.find(pResource);
+		if (it != G->mResizedBuffers.end() && !it->second.isConstantBuffer)
+			origByteWidth = it->second.origByteWidth;
+		ReleaseSRWLockShared(&G->mResizedBuffersLock);
 
-		if (hash) {
-			TextureOverrideMap::iterator to_it = lookup_textureoverride(hash);
-			if (to_it != G->mTextureOverrideMap.end()) {
-				for (const TextureOverride &to : to_it->second) {
-					UINT stride = to.uav_byte_stride ? to.uav_byte_stride : to.override_byte_stride;
-					if (to.override_byte_width > 0 && stride > 0) {
+		if (origByteWidth > 0) {
+			D3D11_BUFFER_DESC bufDesc;
+			((ID3D11Buffer*)pResource)->GetDesc(&bufDesc);
+
+			UINT elemSize = 0;
+			if (pDesc->Buffer.Flags & D3D11_BUFFER_UAV_FLAG_RAW) {
+				elemSize = 4;
+			} else if (pDesc->Format == DXGI_FORMAT_UNKNOWN) {
+				elemSize = bufDesc.StructureByteStride;
+			} else {
+				elemSize = dxgi_format_size(pDesc->Format);
+			}
+			if (elemSize == 0 && pDesc->Buffer.NumElements > 0 && (origByteWidth % pDesc->Buffer.NumElements) == 0) {
+				elemSize = origByteWidth / pDesc->Buffer.NumElements;
+			}
+
+			if (elemSize > 0 && bufDesc.ByteWidth > origByteWidth) {
+				UINT origElements = origByteWidth / elemSize;
+				UINT maxElements = bufDesc.ByteWidth / elemSize;
+				if (pDesc->Buffer.FirstElement < maxElements &&
+				    (pDesc->Buffer.FirstElement + pDesc->Buffer.NumElements >= origElements)) {
+					UINT newElements = maxElements - pDesc->Buffer.FirstElement;
+					if (newElements > pDesc->Buffer.NumElements) {
 						newDesc = *pDesc;
-						UINT newElements = to.override_byte_width / stride;
-						if (newElements > newDesc.Buffer.NumElements) {
-							newDesc.Buffer.NumElements = newElements;
-							pActualDesc = &newDesc;
-						}
+						newDesc.Buffer.NumElements = newElements;
+						pActualDesc = &newDesc;
 					}
 				}
 			}
 		}
 	}
 
-	return mOrigDevice1->CreateUnorderedAccessView(pResource, pActualDesc, ppUAView);
+	HRESULT hr = mOrigDevice1->CreateUnorderedAccessView(pResource, pActualDesc, ppUAView);
+	if (FAILED(hr) && pActualDesc != pDesc) {
+		static int s_uav_fail_log = 0;
+		if (gLogDebug || s_uav_fail_log < 16) {
+			s_uav_fail_log++;
+			LogInfo("CreateUnorderedAccessView resized desc failed (0x%x), retrying original desc\n", hr);
+		}
+		hr = mOrigDevice1->CreateUnorderedAccessView(pResource, pDesc, ppUAView);
+	}
+	return hr;
 }
 
 STDMETHODIMP HackerDevice::CreateRenderTargetView(THIS_
@@ -2253,16 +2277,40 @@ STDMETHODIMP HackerDevice::CreateBuffer(THIS_
 		}
 	}
 
+	// On Linux/DXVK/Vulkan, constant buffers smaller than minUniformBufferOffsetAlignment
+	// (up to 256 bytes) are sub-allocated without zero-filling past ByteWidth, and DXVK's
+	// default d3d11.constantBufferRangeCheck=False allows out-of-bounds shader reads (e.g.
+	// SRMI MultiSkinning4VG reading cb0[4].x from a 16-byte SingleSK4VGs CB) to see stale
+	// non-zero garbage instead of Windows D3D11's guaranteed 0. Pad small CBs to 256 bytes
+	// with zero-filled tail (computed after hashing so 3DMigoto hashes are untouched).
+	constexpr UINT MIN_SAFE_CB_BYTES = 256;
+	bool is_small_cb_pad = false;
+	if (pDesc && (pDesc->BindFlags & D3D11_BIND_CONSTANT_BUFFER) &&
+	    pNewDesc && pNewDesc->ByteWidth > 0 && pNewDesc->ByteWidth < MIN_SAFE_CB_BYTES) {
+		newDesc = *pNewDesc;
+		newDesc.ByteWidth = MIN_SAFE_CB_BYTES;
+		pNewDesc = &newDesc;
+		is_small_cb_pad = true;
+	}
+
 	D3D11_SUBRESOURCE_DATA newInitialData;
 	const D3D11_SUBRESOURCE_DATA *pActualInitialData = pInitialData;
 	std::vector<uint8_t> expandedMem;
 
-	if (pInitialData && pInitialData->pSysMem && pDesc && pNewDesc && pNewDesc->ByteWidth > pDesc->ByteWidth) {
-		expandedMem.resize(pNewDesc->ByteWidth, 0);
-		memcpy(expandedMem.data(), pInitialData->pSysMem, pDesc->ByteWidth);
-		newInitialData = *pInitialData;
-		newInitialData.pSysMem = expandedMem.data();
-		pActualInitialData = &newInitialData;
+	if (pDesc && pNewDesc && pNewDesc->ByteWidth > pDesc->ByteWidth) {
+		if (pInitialData && pInitialData->pSysMem) {
+			expandedMem.resize(pNewDesc->ByteWidth, 0);
+			memcpy(expandedMem.data(), pInitialData->pSysMem, pDesc->ByteWidth);
+			newInitialData = *pInitialData;
+			newInitialData.pSysMem = expandedMem.data();
+			pActualInitialData = &newInitialData;
+		} else if (is_small_cb_pad) {
+			expandedMem.resize(pNewDesc->ByteWidth, 0);
+			newInitialData.pSysMem = expandedMem.data();
+			newInitialData.SysMemPitch = 0;
+			newInitialData.SysMemSlicePitch = 0;
+			pActualInitialData = &newInitialData;
+		}
 	}
 
 	HRESULT hr = mOrigDevice1->CreateBuffer(pNewDesc, pActualInitialData, ppBuffer);
@@ -2283,6 +2331,16 @@ STDMETHODIMP HackerDevice::CreateBuffer(THIS_
 			//	memcpy(&handle_info->descBuf, pDesc, sizeof(D3D11_BUFFER_DESC));
 
 		LeaveCriticalSection(&G->mResourcesLock);
+		if (pDesc && pNewDesc && pNewDesc->ByteWidth > pDesc->ByteWidth) {
+			AcquireSRWLockExclusive(&G->mResizedBuffersLock);
+			G->mResizedBuffers[*ppBuffer] = {
+				pDesc->ByteWidth,
+				pNewDesc->ByteWidth,
+				(pDesc->BindFlags & D3D11_BIND_CONSTANT_BUFFER) != 0
+			};
+			G->mResizedBufferCount.store(G->mResizedBuffers.size(), std::memory_order_relaxed);
+			ReleaseSRWLockExclusive(&G->mResizedBuffersLock);
+		}
 		EnterCriticalSectionPretty(&G->mCriticalSection);
 			// For stat collection and hash contamination tracking:
 			if (G->hunting && pDesc) {
@@ -2543,7 +2601,69 @@ STDMETHODIMP HackerDevice::CreateShaderResourceView(THIS_
 {
 	LogDebug("HackerDevice::CreateShaderResourceView called\n");
 
-	HRESULT hr = mOrigDevice1->CreateShaderResourceView(pResource, pDesc, ppSRView);
+	D3D11_SHADER_RESOURCE_VIEW_DESC newDesc;
+	const D3D11_SHADER_RESOURCE_VIEW_DESC *pActualDesc = pDesc;
+
+	if (pResource && pDesc &&
+	    (pDesc->ViewDimension == D3D11_SRV_DIMENSION_BUFFER || pDesc->ViewDimension == D3D11_SRV_DIMENSION_BUFFEREX) &&
+	    G->mResizedBufferCount.load(std::memory_order_relaxed) > 0) {
+		UINT origByteWidth = 0;
+		AcquireSRWLockShared(&G->mResizedBuffersLock);
+		auto it = G->mResizedBuffers.find(pResource);
+		if (it != G->mResizedBuffers.end() && !it->second.isConstantBuffer)
+			origByteWidth = it->second.origByteWidth;
+		ReleaseSRWLockShared(&G->mResizedBuffersLock);
+
+		if (origByteWidth > 0) {
+			D3D11_BUFFER_DESC bufDesc;
+			((ID3D11Buffer*)pResource)->GetDesc(&bufDesc);
+
+			bool is_raw = (pDesc->ViewDimension == D3D11_SRV_DIMENSION_BUFFEREX) &&
+			              (pDesc->BufferEx.Flags & D3D11_BUFFEREX_SRV_FLAG_RAW);
+			UINT firstElem = (pDesc->ViewDimension == D3D11_SRV_DIMENSION_BUFFEREX)
+				? pDesc->BufferEx.FirstElement : pDesc->Buffer.FirstElement;
+			UINT numElems = (pDesc->ViewDimension == D3D11_SRV_DIMENSION_BUFFEREX)
+				? pDesc->BufferEx.NumElements : pDesc->Buffer.NumElements;
+
+			UINT elemSize = 0;
+			if (is_raw) {
+				elemSize = 4;
+			} else if (pDesc->Format == DXGI_FORMAT_UNKNOWN) {
+				elemSize = bufDesc.StructureByteStride;
+			} else {
+				elemSize = dxgi_format_size(pDesc->Format);
+			}
+			if (elemSize == 0 && numElems > 0 && (origByteWidth % numElems) == 0) {
+				elemSize = origByteWidth / numElems;
+			}
+
+			if (elemSize > 0 && bufDesc.ByteWidth > origByteWidth) {
+				UINT origElements = origByteWidth / elemSize;
+				UINT maxElements = bufDesc.ByteWidth / elemSize;
+				if (firstElem < maxElements && (firstElem + numElems >= origElements)) {
+					UINT newElements = maxElements - firstElem;
+					if (newElements > numElems) {
+						newDesc = *pDesc;
+						if (newDesc.ViewDimension == D3D11_SRV_DIMENSION_BUFFEREX)
+							newDesc.BufferEx.NumElements = newElements;
+						else
+							newDesc.Buffer.NumElements = newElements;
+						pActualDesc = &newDesc;
+					}
+				}
+			}
+		}
+	}
+
+	HRESULT hr = mOrigDevice1->CreateShaderResourceView(pResource, pActualDesc, ppSRView);
+	if (FAILED(hr) && pActualDesc != pDesc) {
+		static int s_srv_fail_log = 0;
+		if (gLogDebug || s_srv_fail_log < 16) {
+			s_srv_fail_log++;
+			LogInfo("CreateShaderResourceView resized desc failed (0x%x), retrying original desc\n", hr);
+		}
+		hr = mOrigDevice1->CreateShaderResourceView(pResource, pDesc, ppSRView);
+	}
 
 	// Check for depth buffer view.
 	if (hr == S_OK && G->ZBufferHashToInject && ppSRView)

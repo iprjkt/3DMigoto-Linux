@@ -1334,6 +1334,12 @@ ULONG STDMETHODCALLTYPE ResourceReleaseTracker::Release(void)
 		EnterCriticalSectionPretty(&G->mResourcesLock);
 		G->mResources.erase(resource);
 		LeaveCriticalSection(&G->mResourcesLock);
+		if (G->mResizedBufferCount.load(std::memory_order_relaxed) > 0) {
+			AcquireSRWLockExclusive(&G->mResizedBuffersLock);
+			if (G->mResizedBuffers.erase(resource))
+				G->mResizedBufferCount.store(G->mResizedBuffers.size(), std::memory_order_relaxed);
+			ReleaseSRWLockExclusive(&G->mResizedBuffersLock);
+		}
 		delete this;
 	}
 	return ret;

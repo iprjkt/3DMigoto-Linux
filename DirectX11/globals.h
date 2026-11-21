@@ -589,7 +589,15 @@ struct Globals
 	SRWLOCK mShadersLock;
 	SRWLOCK mReloadedShadersLock;
 	SRWLOCK mShaderOverrideLock;
+	SRWLOCK mResizedBuffersLock;
 	ResourceMap mResources;
+	struct ResizedBufferInfo {
+		UINT origByteWidth;
+		UINT newByteWidth;
+		bool isConstantBuffer;
+	};
+	std::unordered_map<ID3D11Resource*, ResizedBufferInfo> mResizedBuffers;
+	std::atomic<size_t> mResizedBufferCount;
 
 	std::unordered_map<ID3D11Asynchronous*, AsyncQueryType> mQueryTypes;
 
@@ -709,7 +717,9 @@ struct Globals
 		dump_all_profiles(false),
 		mShadersLock(SRWLOCK_INIT),
 		mReloadedShadersLock(SRWLOCK_INIT),
-		mShaderOverrideLock(SRWLOCK_INIT)
+		mShaderOverrideLock(SRWLOCK_INIT),
+		mResizedBuffersLock(SRWLOCK_INIT),
+		mResizedBufferCount(0)
 	{
 		int i;
 

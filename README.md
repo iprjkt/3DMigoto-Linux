@@ -24,6 +24,7 @@ This fork eliminates the architectural incompatibilities that previously prevent
   - [7. Thread-Safe Concurrency & Non-Blocking ShaderRegex Cache](#7-thread-safe-concurrency--non-blocking-shaderregex-cache)
   - [8. Dynamic VertexLimitRaise & Assembler Fixes](#8-dynamic-vertexlimitraise--assembler-fixes)
   - [9. GCC Strict-Aliasing, Implicit IB Restoration & SRMI/XXMI Compatibility](#9-gcc-strict-aliasing-implicit-ib-restoration--srmixxmi-compatibility)
+  - [10. Resized Buffer Safety & DXVK Constant Buffer Zero-Padding](#10-resized-buffer-safety--dxvk-constant-buffer-zero-padding)
 - [Requirements](#requirements)
 - [Setup & Installation](#setup--installation)
   - [Deployment Layout](#deployment-layout)
@@ -84,6 +85,12 @@ Stock 3DMigoto was originally authored for native Windows and MSVC. When deploye
   - Replaced strict-aliasing UB `(int&)a |= (int)b` in `SENSIBLE_ENUM` (`util_min.h`) with standard `static_cast` assignments so MinGW-w64 `-O2` preserves `CustomResource::bind_flags` propagation, preventing `bind_flags=0x000` resource failures and `CreateCompatibleView` log-flood throttling.
   - Added automatic index buffer save/restore in `HackerContext::AfterDraw` so multi-submesh/weapon overrides do not drop subsequent `DrawIndexed` calls when Unity reuses implicitly bound index buffers.
   - Added `effective_dpi`, binary literals (`0b...`), and bitwise operators (`&`, `^`, `|`) to the command list expression evaluator for modern SRMI/XXMI packages and mods.
+
+### 10. Resized Buffer Safety & DXVK Constant Buffer Zero-Padding
+- **Fix**:
+  - Tracked buffers resized via `VertexLimitRaise` / `override_vertex_count` in a dedicated `SRWLOCK`-protected map (`mResizedBuffers`) and guarded `CopyResource`, `CopySubresourceRegion(1)`, and `UpdateSubresource(1)` against mismatched buffer sizes or out-of-bounds reads, while safely expanding `CreateUnorderedAccessView` and `CreateShaderResourceView` `NumElements` with automatic fallback to original descriptors. Fixes collapsed/crumpled vanilla meshes when mods are toggled off (`F6`) on characters whose buffers are enlarged.
+  - Automatically zero-pads small constant buffers (`< 256` bytes) to `256` bytes across `CreateBuffer`, `Map`, and `UpdateSubresource(1)` (after 3DMigoto hash calculation) so Linux/DXVK/Vulkan matches native Windows D3D11 out-of-bounds zero-read semantics. Fixes invisible compute-skinned modded character bodies (e.g., *Honkai: Star Rail* Evanescia under SRMI `SingleSK4VGs` + `MultiSkinning4VG.hlsl`).
+  - Replaced invalid `'?'` generic buffer dump filenames in `FrameAnalysis.cpp` with `'g'` to prevent Wine file creation errors during `F8` Frame Analysis dumps.
 
 ---
 

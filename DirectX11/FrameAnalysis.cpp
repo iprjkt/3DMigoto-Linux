@@ -1777,10 +1777,10 @@ void FrameAnalysisContext::DumpBufferImmediateCtx(ID3D11Buffer *staging, D3D11_B
 			// We don't know what kind of buffer this is, so just
 			// use the generic dump routine:
 
-			dedupe_buf_filename_txt(bin_filename, txt_filename, MAX_PATH, '?', idx, stride, offset);
+			dedupe_buf_filename_txt(bin_filename, txt_filename, MAX_PATH, 'g', idx, stride, offset);
 			FALogInfo("Dumping Buffer %S -> %S\n", filename.c_str(), txt_filename);
 			if (GetFileAttributes(txt_filename) == INVALID_FILE_ATTRIBUTES) {
-				DumpBufferTxt(txt_filename, &map, orig_desc->ByteWidth, '?', idx, stride, offset);
+				DumpBufferTxt(txt_filename, &map, orig_desc->ByteWidth, 'g', idx, stride, offset);
 			}
 		}
 		link_deduplicated_files(filename.c_str(), txt_filename);

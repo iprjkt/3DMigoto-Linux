@@ -1419,6 +1419,23 @@ out_profile:
 		Profiling::end(&profiling_state, &Profiling::map_overhead);
 }
 
+static bool lookup_resized_buffer_info(ID3D11Resource *res, Globals::ResizedBufferInfo *info)
+{
+	if (!res || G->mResizedBufferCount.load(std::memory_order_relaxed) == 0)
+		return false;
+
+	bool found = false;
+	AcquireSRWLockShared(&G->mResizedBuffersLock);
+	auto it = G->mResizedBuffers.find(res);
+	if (it != G->mResizedBuffers.end()) {
+		if (info)
+			*info = it->second;
+		found = true;
+	}
+	ReleaseSRWLockShared(&G->mResizedBuffersLock);
+	return found;
+}
+
 STDMETHODIMP HackerContext::Map(THIS_
 	/* [annotation] */
 	__in  ID3D11Resource *pResource,
@@ -1434,6 +1451,16 @@ STDMETHODIMP HackerContext::Map(THIS_
 	HRESULT hr;
 
 	hr = mOrigContext1->Map(pResource, Subresource, MapType, MapFlags, pMappedResource);
+
+	if (SUCCEEDED(hr) && pMappedResource && pMappedResource->pData &&
+	    (MapType == D3D11_MAP_WRITE_DISCARD || MapType == D3D11_MAP_WRITE || MapType == D3D11_MAP_READ_WRITE)) {
+		Globals::ResizedBufferInfo resizedInfo;
+		if (lookup_resized_buffer_info(pResource, &resizedInfo) &&
+		    resizedInfo.isConstantBuffer && resizedInfo.newByteWidth > resizedInfo.origByteWidth) {
+			memset((uint8_t*)pMappedResource->pData + resizedInfo.origByteWidth, 0,
+			       resizedInfo.newByteWidth - resizedInfo.origByteWidth);
+		}
+	}
 
 	TrackAndDivertMap(hr, pResource, Subresource, MapType, MapFlags, pMappedResource);
 
@@ -1822,6 +1849,23 @@ STDMETHODIMP_(void) HackerContext::CopySubresourceRegion(THIS_
 	if (ExpandRegionCopy(pDstResource, DstX, DstY, pSrcResource, pSrcBox, &replaceDstX, &replaceSrcBox))
 		pSrcBox = &replaceSrcBox;
 
+	D3D11_BOX clampedBufBox;
+	if (!pSrcBox && pDstResource && pSrcResource &&
+	    (lookup_resized_buffer_info(pDstResource, NULL) || lookup_resized_buffer_info(pSrcResource, NULL))) {
+		D3D11_RESOURCE_DIMENSION dstDim, srcDim;
+		pDstResource->GetType(&dstDim);
+		pSrcResource->GetType(&srcDim);
+		if (dstDim == D3D11_RESOURCE_DIMENSION_BUFFER && srcDim == D3D11_RESOURCE_DIMENSION_BUFFER) {
+			D3D11_BUFFER_DESC dstDesc, srcDesc;
+			((ID3D11Buffer*)pDstResource)->GetDesc(&dstDesc);
+			((ID3D11Buffer*)pSrcResource)->GetDesc(&srcDesc);
+			if (replaceDstX < dstDesc.ByteWidth && srcDesc.ByteWidth > dstDesc.ByteWidth - replaceDstX) {
+				clampedBufBox = { 0, 0, 0, dstDesc.ByteWidth - replaceDstX, 1, 1 };
+				pSrcBox = &clampedBufBox;
+			}
+		}
+	}
+
 	 mOrigContext1->CopySubresourceRegion(pDstResource, DstSubresource, replaceDstX, DstY, DstZ,
 		pSrcResource, SrcSubresource, pSrcBox);
 
@@ -1845,7 +1889,29 @@ STDMETHODIMP_(void) HackerContext::CopyResource(THIS_
 		MarkResourceHashContaminated(pDstResource, 0, pSrcResource, 0, 'C', 0, 0, 0, NULL);
 	}
 
-	 mOrigContext1->CopyResource(pDstResource, pSrcResource);
+	bool handled_resized_copy = false;
+	if (pDstResource && pSrcResource &&
+	    (lookup_resized_buffer_info(pDstResource, NULL) || lookup_resized_buffer_info(pSrcResource, NULL))) {
+		D3D11_RESOURCE_DIMENSION dstDim, srcDim;
+		pDstResource->GetType(&dstDim);
+		pSrcResource->GetType(&srcDim);
+		if (dstDim == D3D11_RESOURCE_DIMENSION_BUFFER && srcDim == D3D11_RESOURCE_DIMENSION_BUFFER) {
+			D3D11_BUFFER_DESC dstDesc, srcDesc;
+			((ID3D11Buffer*)pDstResource)->GetDesc(&dstDesc);
+			((ID3D11Buffer*)pSrcResource)->GetDesc(&srcDesc);
+			if (dstDesc.ByteWidth != srcDesc.ByteWidth) {
+				UINT copyBytes = min(srcDesc.ByteWidth, dstDesc.ByteWidth);
+				if (copyBytes > 0) {
+					D3D11_BOX srcBox = { 0, 0, 0, copyBytes, 1, 1 };
+					mOrigContext1->CopySubresourceRegion(pDstResource, 0, 0, 0, 0, pSrcResource, 0, &srcBox);
+				}
+				handled_resized_copy = true;
+			}
+		}
+	}
+
+	if (!handled_resized_copy)
+		mOrigContext1->CopyResource(pDstResource, pSrcResource);
 
 	if (G->track_texture_updates == 1)
 		PropagateResourceHash(pDstResource, pSrcResource);
@@ -1867,6 +1933,22 @@ STDMETHODIMP_(void) HackerContext::UpdateSubresource(THIS_
 {
 	if (G->hunting && G->track_texture_updates != 2) { // Any hunting mode - want to catch hash contamination even while soft disabled
 		MarkResourceHashContaminated(pDstResource, DstSubresource, NULL, 0, 'U', 0, 0, 0, NULL);
+	}
+
+	D3D11_BOX origBufBox;
+	uint8_t paddedCbBuf[256];
+	Globals::ResizedBufferInfo resizedInfo;
+	if (!pDstBox && pSrcData && lookup_resized_buffer_info(pDstResource, &resizedInfo) &&
+	    resizedInfo.origByteWidth > 0 && resizedInfo.newByteWidth > resizedInfo.origByteWidth) {
+		if (resizedInfo.isConstantBuffer && resizedInfo.newByteWidth <= sizeof(paddedCbBuf)) {
+			memcpy(paddedCbBuf, pSrcData, resizedInfo.origByteWidth);
+			memset(paddedCbBuf + resizedInfo.origByteWidth, 0,
+			       resizedInfo.newByteWidth - resizedInfo.origByteWidth);
+			pSrcData = paddedCbBuf;
+		} else if (!resizedInfo.isConstantBuffer) {
+			origBufBox = { 0, 0, 0, resizedInfo.origByteWidth, 1, 1 };
+			pDstBox = &origBufBox;
+		}
 	}
 
 	 mOrigContext1->UpdateSubresource(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch,
@@ -3180,6 +3262,23 @@ void STDMETHODCALLTYPE HackerContext::CopySubresourceRegion1(
 	/* [annotation] */
 	_In_  UINT CopyFlags)
 {
+	D3D11_BOX clampedBufBox;
+	if (!pSrcBox && pDstResource && pSrcResource &&
+	    (lookup_resized_buffer_info(pDstResource, NULL) || lookup_resized_buffer_info(pSrcResource, NULL))) {
+		D3D11_RESOURCE_DIMENSION dstDim, srcDim;
+		pDstResource->GetType(&dstDim);
+		pSrcResource->GetType(&srcDim);
+		if (dstDim == D3D11_RESOURCE_DIMENSION_BUFFER && srcDim == D3D11_RESOURCE_DIMENSION_BUFFER) {
+			D3D11_BUFFER_DESC dstDesc, srcDesc;
+			((ID3D11Buffer*)pDstResource)->GetDesc(&dstDesc);
+			((ID3D11Buffer*)pSrcResource)->GetDesc(&srcDesc);
+			if (DstX < dstDesc.ByteWidth && srcDesc.ByteWidth > dstDesc.ByteWidth - DstX) {
+				clampedBufBox = { 0, 0, 0, dstDesc.ByteWidth - DstX, 1, 1 };
+				pSrcBox = &clampedBufBox;
+			}
+		}
+	}
+
 	mOrigContext1->CopySubresourceRegion1(pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox, CopyFlags);
 }
 
@@ -3199,6 +3298,22 @@ void STDMETHODCALLTYPE HackerContext::UpdateSubresource1(
 	/* [annotation] */
 	_In_  UINT CopyFlags)
 {
+	D3D11_BOX origBufBox;
+	uint8_t paddedCbBuf[256];
+	Globals::ResizedBufferInfo resizedInfo;
+	if (!pDstBox && pSrcData && lookup_resized_buffer_info(pDstResource, &resizedInfo) &&
+	    resizedInfo.origByteWidth > 0 && resizedInfo.newByteWidth > resizedInfo.origByteWidth) {
+		if (resizedInfo.isConstantBuffer && resizedInfo.newByteWidth <= sizeof(paddedCbBuf)) {
+			memcpy(paddedCbBuf, pSrcData, resizedInfo.origByteWidth);
+			memset(paddedCbBuf + resizedInfo.origByteWidth, 0,
+			       resizedInfo.newByteWidth - resizedInfo.origByteWidth);
+			pSrcData = paddedCbBuf;
+		} else if (!resizedInfo.isConstantBuffer) {
+			origBufBox = { 0, 0, 0, resizedInfo.origByteWidth, 1, 1 };
+			pDstBox = &origBufBox;
+		}
+	}
+
 	mOrigContext1->UpdateSubresource1(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch, CopyFlags);
 
 	// TODO: Track resource hash updates
